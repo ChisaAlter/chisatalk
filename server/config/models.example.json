@@ -1,0 +1,17 @@
+{
+  "models": [
+    {
+      "id": "hermes",
+      "displayName": "Hermes",
+      "description": "Hermes model managed by ChisaTalk server",
+      "capabilities": ["text", "tools"],
+      "enabled": false,
+      "provider": {
+        "type": "openai-compatible",
+        "chatCompletionsUrl": "https://example.com/v1/chat/completions",
+        "apiKeyEnv": "HERMES_API_KEY",
+        "model": "hermes"
+      }
+    }
+  ]
+}
