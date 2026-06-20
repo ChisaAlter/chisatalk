@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMessageContent } from "./message-content-parser";
+import { formatTableRowsForDisplay, parseMessageContent } from "./message-content-parser";
 
 describe("parseMessageContent", () => {
   it("parses markdown tables without exposing separator rows", () => {
@@ -16,6 +16,33 @@ describe("parseMessageContent", () => {
         type: "table",
         headers: ["入弯前", "弯心(Apex)", "出弯后"],
         rows: [["外侧", "内侧", "外侧"]],
+      },
+    ]);
+  });
+
+  it("normalizes table rows for a vertical mobile display", () => {
+    expect(
+      formatTableRowsForDisplay({
+        headers: ["时间", "入弯前", "出弯后"],
+        rows: [
+          ["10 分钟", "外侧", "内侧"],
+          ["20 分钟", "减速"],
+        ],
+      }),
+    ).toEqual([
+      {
+        cells: [
+          { header: "时间", value: "10 分钟" },
+          { header: "入弯前", value: "外侧" },
+          { header: "出弯后", value: "内侧" },
+        ],
+      },
+      {
+        cells: [
+          { header: "时间", value: "20 分钟" },
+          { header: "入弯前", value: "减速" },
+          { header: "出弯后", value: "" },
+        ],
       },
     ]);
   });

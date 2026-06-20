@@ -1,6 +1,10 @@
-import { Image, ScrollView, Text, View } from "react-native";
+import { Image, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { parseMessageContent, type MessageContentToken } from "./message-content-parser";
+import {
+  formatTableRowsForDisplay,
+  parseMessageContent,
+  type MessageContentToken,
+} from "./message-content-parser";
 
 interface MessageContentProps {
   content: string;
@@ -80,43 +84,30 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     lineHeight: 20,
   },
-  tableScroll: {
-    maxWidth: 260,
-  },
   table: {
-    borderTopWidth: theme.borderWidth[1],
-    borderLeftWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderStrong,
-    borderRadius: theme.borderRadius.lg,
-    overflow: "hidden",
+    gap: theme.spacing[2],
   },
   tableRow: {
-    flexDirection: "row",
-  },
-  tableHeaderCell: {
-    minWidth: 88,
-    maxWidth: 132,
-    backgroundColor: theme.colors.surface2,
-    borderRightWidth: theme.borderWidth[1],
-    borderBottomWidth: theme.borderWidth[1],
+    borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderStrong,
-    paddingHorizontal: theme.spacing[2],
-    paddingVertical: theme.spacing[2],
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface1,
+    overflow: "hidden",
   },
   tableCell: {
-    minWidth: 88,
-    maxWidth: 132,
-    backgroundColor: theme.colors.surface1,
-    borderRightWidth: theme.borderWidth[1],
     borderBottomWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[2],
+    gap: theme.spacing[1],
+  },
+  tableCellLast: {
+    borderBottomWidth: 0,
   },
   tableHeaderText: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
-    lineHeight: 20,
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+    lineHeight: 18,
     fontWeight: theme.fontWeight.bold,
     includeFontPadding: false,
   },
@@ -191,38 +182,24 @@ function InlineText({ text, style }: { text: string; style: object }) {
 }
 
 function renderTable(token: Extract<MessageContentToken, { type: "table" }>, index: number) {
-  const columnCount = token.headers.length;
-  const normalizeCells = (cells: string[]) => {
-    return Array.from({ length: columnCount }, (_, cellIndex) => cells[cellIndex] ?? "");
-  };
+  const displayRows = formatTableRowsForDisplay(token);
 
   return (
-    <ScrollView
-      horizontal
-      key={index}
-      nestedScrollEnabled
-      showsHorizontalScrollIndicator={false}
-      style={styles.tableScroll}
-    >
-      <View style={styles.table}>
-        <View style={styles.tableRow}>
-          {token.headers.map((header, cellIndex) => (
-            <View key={`header-${cellIndex}`} style={styles.tableHeaderCell}>
-              <InlineText style={styles.tableHeaderText} text={header} />
+    <View key={index} style={styles.table}>
+      {displayRows.map((row, rowIndex) => (
+        <View key={`row-${rowIndex}`} style={styles.tableRow}>
+          {row.cells.map((cell, cellIndex) => (
+            <View
+              key={`cell-${rowIndex}-${cellIndex}`}
+              style={[styles.tableCell, cellIndex === row.cells.length - 1 ? styles.tableCellLast : null]}
+            >
+              <Text style={styles.tableHeaderText}>{cell.header}</Text>
+              <InlineText style={styles.tableText} text={cell.value || "-"} />
             </View>
           ))}
         </View>
-        {token.rows.map((row, rowIndex) => (
-          <View key={`row-${rowIndex}`} style={styles.tableRow}>
-            {normalizeCells(row).map((cell, cellIndex) => (
-              <View key={`cell-${rowIndex}-${cellIndex}`} style={styles.tableCell}>
-                <InlineText style={styles.tableText} text={cell} />
-              </View>
-            ))}
-          </View>
-        ))}
-      </View>
-    </ScrollView>
+      ))}
+    </View>
   );
 }
 

@@ -8,7 +8,7 @@ declare const process:
 
 function readApiBaseUrl(): string {
   const configured = process?.env?.EXPO_PUBLIC_CHISATALK_API_BASE_URL?.trim();
-  return (configured && configured.length > 0 ? configured : "https://38.76.185.154:8789").replace(
+  return (configured && configured.length > 0 ? configured : "http://38.76.185.154:8789").replace(
     /\/+$/,
     "",
   );
@@ -526,10 +526,12 @@ export async function createChatCompletion(
     content: string;
     modelId: string;
     clientMessageId: string;
+    editMessageId?: string;
     providerMeta?: JsonValue;
     systemPrompt: string;
   },
   fetcher: ChisaTalkFetch = fetch,
+  signal?: AbortSignal,
 ): Promise<{
   userMessage: ChisaTalkMessage;
   assistantMessage: ChisaTalkMessage;
@@ -540,6 +542,7 @@ export async function createChatCompletion(
     {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      signal,
       body: JSON.stringify(input),
     },
     fetcher,

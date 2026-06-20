@@ -8,6 +8,7 @@ import {
   darkGhosttyTheme,
   liquidNeonTheme,
   chisakiTheme,
+  wallpaperTheme,
 } from "./theme";
 
 StyleSheet.configure({
@@ -20,6 +21,7 @@ StyleSheet.configure({
     darkGhostty: darkGhosttyTheme,
     liquidNeon: liquidNeonTheme,
     chisaki: chisakiTheme,
+    wallpaper: wallpaperTheme,
   },
   breakpoints: {
     xs: 0,
@@ -29,7 +31,7 @@ StyleSheet.configure({
     xl: 1200,
   },
   settings: {
-    initialTheme: "chisaki",
+    initialTheme: "wallpaper",
   },
 });
 
@@ -43,6 +45,7 @@ interface AppThemes {
   darkGhostty: typeof darkGhosttyTheme;
   liquidNeon: typeof liquidNeonTheme;
   chisaki: typeof chisakiTheme;
+  wallpaper: typeof wallpaperTheme;
 }
 
 interface AppBreakpoints {

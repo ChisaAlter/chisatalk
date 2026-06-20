@@ -24,8 +24,15 @@ function summarizeToolProgress(value: unknown): string | null {
         return message;
       }
 
-      const toolName = readText(item.toolName);
-      const status = readText(item.status);
+      const toolName =
+        readText(item.toolName) ??
+        readText(item.name) ??
+        readText(item.tool) ??
+        readText(item.title);
+      const status =
+        readText(item.status) ??
+        readText(item.state) ??
+        readText(item.phase);
       if (toolName && status) {
         return `${toolName}：${status}`;
       }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import {
@@ -64,6 +64,10 @@ function getReadableError(error: unknown): string {
   return "请求失败";
 }
 
+function isRequestCancelled(error: unknown): boolean {
+  return error instanceof Error && error.message === "Hermes Agent 请求已取消";
+}
+
 function createClientMessageId(): string {
   return `client_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -110,6 +114,30 @@ function getDefaultModelId(models: ChisaTalkModel[]): string | null {
   );
 }
 
+function replaceMessageAndDropFollowing(
+  messages: ChisaTalkMessage[],
+  nextMessage: ChisaTalkMessage,
+): ChisaTalkMessage[] {
+  const index = messages.findIndex((message) => message.id === nextMessage.id);
+  if (index === -1) {
+    return [...messages, nextMessage];
+  }
+  return [...messages.slice(0, index), nextMessage];
+}
+
+function appendOrReplaceMessage(
+  messages: ChisaTalkMessage[],
+  nextMessage: ChisaTalkMessage,
+): ChisaTalkMessage[] {
+  const index = messages.findIndex((message) => message.id === nextMessage.id);
+  if (index === -1) {
+    return [...messages, nextMessage];
+  }
+  const nextMessages = [...messages];
+  nextMessages[index] = nextMessage;
+  return nextMessages;
+}
+
 export default function Index() {
   const { theme } = useUnistyles();
   const [bootState, setBootState] = useState<BootState>("loading");
@@ -127,6 +155,8 @@ export default function Index() {
   const [pendingImage, setPendingImage] = useState<ChisaTalkImageAttachment | null>(null);
   const [streamingAssistantContent, setStreamingAssistantContent] = useState("");
   const [agentProgressText, setAgentProgressText] = useState<string | null>(null);
+  const activeSendAbortRef = useRef<AbortController | null>(null);
+  const activeSendIdRef = useRef(0);
   const [assistantProfile, setAssistantProfile] = useState<AssistantProfile>(DEFAULT_ASSISTANT_PROFILE);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -381,8 +411,12 @@ export default function Index() {
   }, []);
 
   const handleSendMessage = useCallback(
-    async (content: string, attachments: ChisaTalkImageAttachment[]) => {
+    async (content: string, attachments: ChisaTalkImageAttachment[], editMessageId?: string) => {
       if (!session) {
+        return;
+      }
+      if (editMessageId && !selectedConversation) {
+        setChatError("只能修改当前会话的最后一条消息");
         return;
       }
 
@@ -397,6 +431,14 @@ export default function Index() {
         setChatError("当前模型配置不存在");
         return;
       }
+
+      activeSendAbortRef.current?.abort();
+      const sendId = activeSendIdRef.current + 1;
+      activeSendIdRef.current = sendId;
+      const abortController = new AbortController();
+      activeSendAbortRef.current = abortController;
+      const isCurrentSend = () =>
+        activeSendIdRef.current === sendId && !abortController.signal.aborted;
 
       setIsSending(true);
       setChatError(null);
@@ -423,20 +465,25 @@ export default function Index() {
           await streamAgentTurn({
             accessToken: session.accessToken,
             conversationId: activeConversation.id,
+            signal: abortController.signal,
             input: {
               content,
               modelId,
               clientMessageId: createClientMessageId(),
+              editMessageId,
               providerMeta: buildAgentProviderMeta(attachments),
               systemPrompt: buildAssistantProfileSystemPrompt(assistantProfile),
             },
             onEvent: (event) => {
+              if (!isCurrentSend()) {
+                return;
+              }
               if (event.type === "user_message") {
                 setMessages((current) => {
-                  if (current.some((message) => message.id === event.message.id)) {
-                    return current;
+                  if (editMessageId) {
+                    return replaceMessageAndDropFollowing(current, event.message);
                   }
-                  return [...current, event.message];
+                  return appendOrReplaceMessage(current, event.message);
                 });
                 setSelectedConversation(event.conversation);
                 setConversations((current) => moveConversationToTop(current, event.conversation));
@@ -451,12 +498,7 @@ export default function Index() {
                 return;
               }
               if (event.type === "assistant_message") {
-                setMessages((current) => {
-                  if (current.some((message) => message.id === event.message.id)) {
-                    return current;
-                  }
-                  return [...current, event.message];
-                });
+                setMessages((current) => appendOrReplaceMessage(current, event.message));
                 setStreamingAssistantContent("");
                 setAgentProgressText(null);
                 setSelectedConversation(event.conversation);
@@ -478,21 +520,38 @@ export default function Index() {
           content,
           modelId,
           clientMessageId: createClientMessageId(),
+          editMessageId,
           providerMeta: buildAgentProviderMeta(attachments),
           systemPrompt: buildAssistantProfileSystemPrompt(assistantProfile),
-        });
-        setMessages((current) => [...current, completion.userMessage, completion.assistantMessage]);
-        setSelectedConversation(completion.conversation);
-        setConversations((current) => moveConversationToTop(current, completion.conversation));
+        }, undefined, abortController.signal);
+        if (isCurrentSend()) {
+          setMessages((current) => {
+            if (!editMessageId) {
+              return [...current, completion.userMessage, completion.assistantMessage];
+            }
+            return [
+              ...replaceMessageAndDropFollowing(current, completion.userMessage),
+              completion.assistantMessage,
+            ];
+          });
+          setSelectedConversation(completion.conversation);
+          setConversations((current) => moveConversationToTop(current, completion.conversation));
+        }
       } catch (error) {
+        if (isRequestCancelled(error)) {
+          return;
+        }
         console.error("[ChisaTalk] Failed to send message", error);
         if (!(await handleAuthError(error))) {
           setChatError(getReadableError(error));
         }
       } finally {
-        setIsSending(false);
-        setStreamingAssistantContent("");
-        setAgentProgressText(null);
+        if (activeSendIdRef.current === sendId) {
+          activeSendAbortRef.current = null;
+          setIsSending(false);
+          setStreamingAssistantContent("");
+          setAgentProgressText(null);
+        }
       }
     },
     [
@@ -502,6 +561,13 @@ export default function Index() {
       selectedConversation,
       session,
     ],
+  );
+
+  const handleEditLastUserMessage = useCallback(
+    async (messageId: string, content: string) => {
+      await handleSendMessage(content, [], messageId);
+    },
+    [handleSendMessage],
   );
 
   if (bootState === "loading") {
@@ -549,6 +615,7 @@ export default function Index() {
       onClearImage={() => setPendingImage(null)}
       onSaveAssistantProfile={handleSaveAssistantProfile}
       onSendMessage={handleSendMessage}
+      onEditLastUserMessage={handleEditLastUserMessage}
     />
   );
 }

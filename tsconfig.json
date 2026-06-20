@@ -12,6 +12,7 @@
     "src/app/**/*.tsx",
     "src/api/**/*.ts",
     "src/auth/**/*.ts",
+    "src/components/**/*.tsx",
     "src/query/query-client.ts",
     "src/screens/**/*.tsx",
     "src/settings/**/*.ts",

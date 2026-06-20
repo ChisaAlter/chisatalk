@@ -21,6 +21,17 @@ describe("message-reasoning", () => {
     ).toBe("检索记忆\nweb_search：done");
   });
 
+  it("summarizes Hermes progress events that use title and state fields", () => {
+    expect(
+      readMessageReasoning({
+        toolProgress: [
+          { title: "联网搜索", state: "running" },
+          { name: "memory", phase: "done" },
+        ],
+      }),
+    ).toBe("联网搜索：running\nmemory：done");
+  });
+
   it("returns null when no displayable reasoning exists", () => {
     expect(readMessageReasoning({ toolProgress: [] })).toBeNull();
     expect(readMessageReasoning(null)).toBeNull();

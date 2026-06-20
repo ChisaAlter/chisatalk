@@ -398,6 +398,74 @@ async function insertMessage(db, databasePath, conversationId, input) {
   };
 }
 
+async function updateUserMessageForRegeneration(db, databasePath, conversationId, input) {
+  const row = selectOne(
+    db,
+    "SELECT * FROM messages WHERE id = ? AND conversation_id = ?",
+    [input.messageId, conversationId],
+  );
+  if (!row || row.role !== "user") {
+    throw Object.assign(new Error("只能修改用户消息"), {
+      status: 422,
+      code: "validation_failed",
+    });
+  }
+
+  const latestUserRow = selectOne(
+    db,
+    `
+      SELECT * FROM messages
+      WHERE conversation_id = ? AND role = 'user'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `,
+    [conversationId],
+  );
+  if (!latestUserRow || latestUserRow.id !== row.id) {
+    throw Object.assign(new Error("只能修改最后一条用户消息"), {
+      status: 422,
+      code: "validation_failed",
+    });
+  }
+
+  const existingMessage = rowToMessage(row);
+  if (input.content.length === 0 && readImageAttachments(existingMessage.providerMeta).length === 0) {
+    throw Object.assign(new Error("content 必须是非空字符串"), {
+      status: 422,
+      code: "validation_failed",
+    });
+  }
+
+  await run(
+    db,
+    databasePath,
+    `
+      DELETE FROM messages
+      WHERE conversation_id = ?
+        AND (created_at > ? OR (created_at = ? AND id > ?))
+    `,
+    [conversationId, row.created_at, row.created_at, row.id],
+  );
+  await run(
+    db,
+    databasePath,
+    "UPDATE messages SET content = ?, model_id = ?, client_message_id = ? WHERE id = ?",
+    [input.content, input.modelId, input.clientMessageId, row.id],
+  );
+  await run(db, databasePath, "UPDATE conversations SET updated_at = ?, model_id = ? WHERE id = ?", [
+    nowIso(),
+    input.modelId,
+    conversationId,
+  ]);
+
+  const message = selectOne(db, "SELECT * FROM messages WHERE id = ?", [row.id]);
+  const conversation = selectOne(db, "SELECT * FROM conversations WHERE id = ?", [conversationId]);
+  return {
+    message: rowToMessage(message),
+    conversation: rowToConversation(conversation),
+  };
+}
+
 function getHermesApiBaseUrl(options) {
   return (options.hermesApiBaseUrl ?? "http://127.0.0.1:8642/v1").replace(/\/+$/, "");
 }
@@ -473,6 +541,30 @@ function getAssistantDelta(payload) {
   }
 
   return typeof choice.delta.content === "string" ? choice.delta.content : "";
+}
+
+function getAssistantReasoningDelta(payload) {
+  if (!isRecord(payload) || !Array.isArray(payload.choices)) {
+    return "";
+  }
+
+  const choice = payload.choices[0];
+  if (!isRecord(choice) || !isRecord(choice.delta)) {
+    return "";
+  }
+
+  const candidates = [
+    choice.delta.reasoning_content,
+    choice.delta.reasoningContent,
+    choice.delta.reasoning,
+    choice.delta.thinking,
+  ];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
+  }
+  return "";
 }
 
 function readImageAttachments(providerMeta) {
@@ -870,7 +962,16 @@ export async function createChisaTalkServer(options) {
     }
 
     const clientMessageId = optionalString(body, "clientMessageId");
+    const editMessageId = optionalString(body, "editMessageId");
     const systemPrompt = typeof body.systemPrompt === "string" ? body.systemPrompt.trim() : "";
+    const editedUserResult = editMessageId
+      ? await updateUserMessageForRegeneration(db, databasePath, conversationId, {
+          messageId: editMessageId,
+          content,
+          modelId,
+          clientMessageId,
+        })
+      : null;
     const historyRows = selectAll(
       db,
       "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
@@ -884,7 +985,7 @@ export async function createChisaTalkServer(options) {
     const messages = [
       systemPrompt ? { role: "system", content: systemPrompt } : null,
       ...historyRows.map(rowToMessage).map(toOpenAiCompatibleMessage),
-      toOpenAiCompatibleMessage(newUserMessage),
+      editMessageId ? null : toOpenAiCompatibleMessage(newUserMessage),
     ].filter(Boolean);
 
     const upstreamResponse = await fetch(model.chatCompletionsUrl, {
@@ -907,13 +1008,15 @@ export async function createChisaTalkServer(options) {
     }
 
     const assistantContent = parseOpenAiAssistantContent(payload);
-    const userResult = await insertMessage(db, databasePath, conversationId, {
-      role: "user",
-      content,
-      modelId,
-      clientMessageId,
-      providerMeta,
-    });
+    const userResult =
+      editedUserResult ??
+      (await insertMessage(db, databasePath, conversationId, {
+        role: "user",
+        content,
+        modelId,
+        clientMessageId,
+        providerMeta,
+      }));
     const assistantResult = await insertMessage(db, databasePath, conversationId, {
       role: "assistant",
       content: assistantContent,
@@ -964,6 +1067,7 @@ export async function createChisaTalkServer(options) {
       });
     }
     const clientMessageId = optionalString(body, "clientMessageId");
+    const editMessageId = optionalString(body, "editMessageId");
     const systemPrompt = typeof body.systemPrompt === "string" ? body.systemPrompt.trim() : "";
 
     response.writeHead(200, {
@@ -973,13 +1077,20 @@ export async function createChisaTalkServer(options) {
     });
 
     try {
-      const userResult = await insertMessage(db, databasePath, conversationId, {
-        role: "user",
-        content,
-        modelId,
-        clientMessageId,
-        providerMeta,
-      });
+      const userResult = editMessageId
+        ? await updateUserMessageForRegeneration(db, databasePath, conversationId, {
+            messageId: editMessageId,
+            content,
+            modelId,
+            clientMessageId,
+          })
+        : await insertMessage(db, databasePath, conversationId, {
+            role: "user",
+            content,
+            modelId,
+            clientMessageId,
+            providerMeta,
+          });
       writeSse(response, "user_message", {
         message: userResult.message,
         conversation: userResult.conversation,
@@ -999,8 +1110,16 @@ export async function createChisaTalkServer(options) {
       ].filter(Boolean);
       const hermesMessages = [...hermesSystemMessages, ...messages];
 
+      const upstreamAbortController = new AbortController();
+      let responseEnded = false;
+      request.on("close", () => {
+        if (!responseEnded) {
+          upstreamAbortController.abort();
+        }
+      });
       const upstreamResponse = await fetch(`${getHermesApiBaseUrl(options)}/chat/completions`, {
         method: "POST",
+        signal: upstreamAbortController.signal,
         headers: {
           Authorization: `Bearer ${options.hermesApiKey}`,
           "Content-Type": "application/json",
@@ -1026,6 +1145,7 @@ export async function createChisaTalkServer(options) {
       }
 
       let assistantContent = "";
+      let reasoningContent = "";
       let upstreamId = null;
       const toolProgress = [];
 
@@ -1057,6 +1177,10 @@ export async function createChisaTalkServer(options) {
           assistantContent += delta;
           writeSse(response, "assistant_delta", { delta });
         }
+        const reasoningDelta = getAssistantReasoningDelta(payload);
+        if (reasoningDelta.length > 0) {
+          reasoningContent += reasoningDelta;
+        }
       }
 
       if (assistantContent.length === 0) {
@@ -1077,6 +1201,7 @@ export async function createChisaTalkServer(options) {
         providerMeta: {
           source: "hermes-agent",
           upstreamId,
+          ...(reasoningContent.trim().length > 0 ? { reasoningContent: reasoningContent.trim() } : {}),
           toolProgress,
         },
       });
@@ -1085,9 +1210,13 @@ export async function createChisaTalkServer(options) {
         conversation: assistantResult.conversation,
       });
       writeSse(response, "done", { ok: true });
+      responseEnded = true;
       response.end();
     } catch (error) {
       console.error("[ChisaTalkServer] Hermes stream failed", error);
+      if (error?.name === "AbortError") {
+        return;
+      }
       writeSse(response, "error", {
         code: typeof error.code === "string" ? error.code : "hermes_stream_failed",
         message: error instanceof Error ? error.message : "Hermes Agent 调用失败",

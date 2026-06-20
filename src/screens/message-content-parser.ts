@@ -7,6 +7,10 @@ export type MessageContentToken =
   | { type: "table"; headers: string[]; rows: string[][] }
   | { type: "image"; alt: string | null; uri: string };
 
+export interface TableDisplayRow {
+  cells: { header: string; value: string }[];
+}
+
 const FENCE_PATTERN = /^```([\w-]+)?\s*$/;
 const HEADING_PATTERN = /^(#{1,2})\s+(.+)$/;
 const UNORDERED_LIST_PATTERN = /^\s*[-*]\s+(.+)$/;
@@ -62,6 +66,22 @@ function parseBareImageUrl(line: string): MessageContentToken | null {
     alt: null,
     uri: value,
   };
+}
+
+export function formatTableRowsForDisplay(
+  table: Extract<MessageContentToken, { type: "table" }>,
+): TableDisplayRow[] {
+  const headers = table.headers.map((header, index) => header.trim() || `列 ${index + 1}`);
+  if (headers.length === 0) {
+    return [];
+  }
+
+  return table.rows.map((row) => ({
+    cells: headers.map((header, index) => ({
+      header,
+      value: row[index]?.trim() ?? "",
+    })),
+  }));
 }
 
 function isBlockBoundary(lines: string[], index: number): boolean {

@@ -137,6 +137,13 @@ before(async () => {
     response.write(
       "data: " +
         JSON.stringify({
+          choices: [{ delta: { reasoning_content: "先检索记忆。" } }],
+        }) +
+        "\n\n",
+    );
+    response.write(
+      "data: " +
+        JSON.stringify({
           choices: [{ delta: { content: "，我是 Hermes。" } }],
         }) +
         "\n\n",
@@ -372,6 +379,104 @@ describe("chisatalk server", () => {
     assert.equal(detail.payload.messages[1].role, "assistant");
   });
 
+  it("edits the latest user message and regenerates the following assistant answer", async () => {
+    providerRequests = [];
+    const loggedIn = await login("admin", "secret");
+    const auth = { Authorization: `Bearer ${loggedIn.payload.accessToken}` };
+
+    const created = await request("/v1/conversations", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "编辑会话", modelId: "glm" }),
+    });
+    const firstTurn = await request(`/v1/conversations/${created.payload.conversation.id}/chat-completions`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "原问题",
+        modelId: "glm",
+        clientMessageId: "client-edit-1",
+        providerMeta: { source: "test" },
+        systemPrompt: "你是 ChisaTalk。",
+      }),
+    });
+
+    const editedTurn = await request(`/v1/conversations/${created.payload.conversation.id}/chat-completions`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "修改后的问题",
+        modelId: "glm",
+        clientMessageId: "client-edit-2",
+        editMessageId: firstTurn.payload.userMessage.id,
+        systemPrompt: "你是 ChisaTalk。",
+      }),
+    });
+
+    assert.equal(editedTurn.response.status, 200);
+    assert.equal(editedTurn.payload.userMessage.id, firstTurn.payload.userMessage.id);
+    assert.equal(editedTurn.payload.userMessage.content, "修改后的问题");
+    assert.equal(editedTurn.payload.assistantMessage.content, "来自服务端代理");
+
+    const detail = await request(`/v1/conversations/${created.payload.conversation.id}`, {
+      headers: auth,
+    });
+    assert.deepEqual(
+      detail.payload.messages.map((message) => [message.role, message.content]),
+      [
+        ["user", "修改后的问题"],
+        ["assistant", "来自服务端代理"],
+      ],
+    );
+    assert.equal(providerRequests.at(-1).body.messages.at(-1).content, "修改后的问题");
+  });
+
+  it("rejects editing a user message that is no longer the latest user message", async () => {
+    const loggedIn = await login("admin", "secret");
+    const auth = { Authorization: `Bearer ${loggedIn.payload.accessToken}` };
+
+    const created = await request("/v1/conversations", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "编辑限制", modelId: "glm" }),
+    });
+    const firstTurn = await request(`/v1/conversations/${created.payload.conversation.id}/chat-completions`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "第一问",
+        modelId: "glm",
+        clientMessageId: "client-edit-limit-1",
+        systemPrompt: "你是 ChisaTalk。",
+      }),
+    });
+    await request(`/v1/conversations/${created.payload.conversation.id}/chat-completions`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "第二问",
+        modelId: "glm",
+        clientMessageId: "client-edit-limit-2",
+        systemPrompt: "你是 ChisaTalk。",
+      }),
+    });
+
+    const rejected = await request(`/v1/conversations/${created.payload.conversation.id}/chat-completions`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "尝试修改第一问",
+        modelId: "glm",
+        clientMessageId: "client-edit-limit-3",
+        editMessageId: firstTurn.payload.userMessage.id,
+        systemPrompt: "你是 ChisaTalk。",
+      }),
+    });
+
+    assert.equal(rejected.response.status, 422);
+    assert.equal(rejected.payload.error.code, "validation_failed");
+  });
+
   it("isolates conversations between users", async () => {
     const admin = await login("admin", "secret");
     const created = await request("/v1/conversations", {
@@ -495,6 +600,7 @@ describe("chisatalk server", () => {
     assert.equal(detail.payload.messages[0].role, "user");
     assert.equal(detail.payload.messages[1].role, "assistant");
     assert.equal(detail.payload.messages[1].content, "你好，我是 Hermes。");
+    assert.equal(detail.payload.messages[1].providerMeta.reasoningContent, "先检索记忆。");
   });
 
   it("streams an error and does not persist an empty assistant message when Hermes fails", async () => {

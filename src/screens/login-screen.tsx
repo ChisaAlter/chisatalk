@@ -1,8 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Animated,
+  Easing,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   StatusBar,
   Text,
   TextInput,
@@ -12,6 +13,7 @@ import { LogIn } from "lucide-react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { CHISATALK_API_BASE_URL } from "@/api/chisatalk-client";
+import { AnimatedPressable } from "@/components/animated-pressable";
 
 interface LoginScreenProps {
   errorMessage: string | null;
@@ -154,6 +156,9 @@ const styles = StyleSheet.create((theme) => ({
 
 export function LoginScreen({ errorMessage, isSubmitting, onSubmit }: LoginScreenProps) {
   const { theme } = useUnistyles();
+  const brandIntro = useRef(new Animated.Value(0)).current;
+  const formIntro = useRef(new Animated.Value(0)).current;
+  const errorIntro = useRef(new Animated.Value(0)).current;
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const canSubmit = username.trim().length > 0 && password.length > 0 && !isSubmitting;
@@ -165,18 +170,93 @@ export function LoginScreen({ errorMessage, isSubmitting, onSubmit }: LoginScree
     void onSubmit({ username: username.trim(), password });
   }, [canSubmit, onSubmit, password, username]);
 
+  useEffect(() => {
+    Animated.stagger(80, [
+      Animated.timing(brandIntro, {
+        toValue: 1,
+        duration: 280,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(formIntro, {
+        toValue: 1,
+        duration: 320,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [brandIntro, formIntro]);
+
+  useEffect(() => {
+    if (!errorMessage) {
+      errorIntro.setValue(0);
+      return;
+    }
+
+    errorIntro.stopAnimation();
+    Animated.timing(errorIntro, {
+      toValue: 1,
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [errorIntro, errorMessage]);
+
+  const brandIntroStyle = useMemo(
+    () => ({
+      opacity: brandIntro,
+      transform: [
+        {
+          translateY: brandIntro.interpolate({
+            inputRange: [0, 1],
+            outputRange: [14, 0],
+          }),
+        },
+      ],
+    }),
+    [brandIntro],
+  );
+  const formIntroStyle = useMemo(
+    () => ({
+      opacity: formIntro,
+      transform: [
+        {
+          translateY: formIntro.interpolate({
+            inputRange: [0, 1],
+            outputRange: [18, 0],
+          }),
+        },
+      ],
+    }),
+    [formIntro],
+  );
+  const errorIntroStyle = useMemo(
+    () => ({
+      opacity: errorIntro,
+      transform: [
+        {
+          translateY: errorIntro.interpolate({
+            inputRange: [0, 1],
+            outputRange: [-6, 0],
+          }),
+        },
+      ],
+    }),
+    [errorIntro],
+  );
+
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar
         barStyle={theme.colorScheme === "dark" ? "light-content" : "dark-content"}
-        backgroundColor={theme.colors.surface0}
+        backgroundColor={theme.colors.statusBar}
       />
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.keyboard}
       >
         <View style={styles.content}>
-          <View style={styles.brand}>
+          <Animated.View style={[styles.brand, brandIntroStyle]}>
             <View style={styles.brandTopRow}>
               <View style={styles.mark}>
                 <Text style={styles.markText}>CT</Text>
@@ -190,9 +270,9 @@ export function LoginScreen({ errorMessage, isSubmitting, onSubmit }: LoginScree
               <Text style={styles.subtitle}>安静、直接、可持续使用的 AI 对话入口。</Text>
             </View>
             <Text style={styles.serverText}>{CHISATALK_API_BASE_URL}</Text>
-          </View>
+          </Animated.View>
 
-          <View style={styles.form}>
+          <Animated.View style={[styles.form, formIntroStyle]}>
             <View style={styles.field}>
               <Text style={styles.label}>账号</Text>
               <TextInput
@@ -223,9 +303,13 @@ export function LoginScreen({ errorMessage, isSubmitting, onSubmit }: LoginScree
               />
             </View>
 
-            {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
+            {errorMessage ? (
+              <Animated.View style={errorIntroStyle}>
+                <Text style={styles.errorText}>{errorMessage}</Text>
+              </Animated.View>
+            ) : null}
 
-            <Pressable
+            <AnimatedPressable
               accessibilityRole="button"
               accessibilityState={{ disabled: !canSubmit, busy: isSubmitting }}
               disabled={!canSubmit}
@@ -234,8 +318,8 @@ export function LoginScreen({ errorMessage, isSubmitting, onSubmit }: LoginScree
             >
               <LogIn size={18} color={theme.colors.accentForeground} />
               <Text style={styles.submitText}>{isSubmitting ? "登录中" : "登录"}</Text>
-            </Pressable>
-          </View>
+            </AnimatedPressable>
+          </Animated.View>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

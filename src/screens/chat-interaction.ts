@@ -32,17 +32,97 @@ interface ReasoningDisclosureState {
   numberOfLines: 1 | undefined;
 }
 
+interface MessageRoleLabelInput {
+  role: string;
+  userDisplayName: string;
+  assistantName: string;
+}
+
+interface MessageActionMessage {
+  id: string;
+  role: string;
+  content: string;
+}
+
+interface MessageActionStateInput {
+  message: MessageActionMessage;
+  latestUserMessageId: string | null;
+  isSending: boolean;
+}
+
+interface MessageActionState {
+  canCopy: boolean;
+  canEditAndRegenerate: boolean;
+}
+
+const DEFAULT_CONVERSATION_TITLE = "新的会话";
+const TITLE_LABEL_SEPARATOR_PATTERN = /^[\s/|·,，:：\-–—]+/;
+const DEFAULT_PARTICIPANT_LABELS = ["你", "ChisaTalk"];
+const TITLE_SEPARATOR_SOURCE = String.raw`[\s/|·,，:：\-–—]`;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeParticipantLabels(labels: string[]): string[] {
+  return Array.from(
+    new Set(labels.map((label) => label.trim()).filter((label) => label.length > 0)),
+  );
+}
+
+export function formatConversationListTitle(
+  title: string,
+  participantLabels = DEFAULT_PARTICIPANT_LABELS,
+): string {
+  const normalizedTitle = title.trim().replace(/\s+/g, " ");
+  if (!normalizedTitle) {
+    return DEFAULT_CONVERSATION_TITLE;
+  }
+
+  let candidate = normalizedTitle;
+  const removedLabels = new Set<string>();
+  const labels = normalizeParticipantLabels([...participantLabels, ...DEFAULT_PARTICIPANT_LABELS]);
+  const labelPattern = new RegExp(
+    `^(${labels.map(escapeRegExp).join("|")})(?=$|${TITLE_SEPARATOR_SOURCE})`,
+  );
+
+  while (true) {
+    const match = candidate.match(labelPattern);
+    if (!match) {
+      break;
+    }
+
+    removedLabels.add(match[1]);
+    candidate = candidate.slice(match[0].length).replace(TITLE_LABEL_SEPARATOR_PATTERN, "");
+  }
+
+  if (removedLabels.size >= 2) {
+    return candidate.trim() || DEFAULT_CONVERSATION_TITLE;
+  }
+
+  return normalizedTitle;
+}
+
+export function getMessageRoleLabel(input: MessageRoleLabelInput): string {
+  if (input.role === "user") {
+    return input.userDisplayName.trim() || "我";
+  }
+  if (input.role === "assistant") {
+    return input.assistantName.trim() || "ChisaTalk";
+  }
+  return input.role;
+}
+
 export function getChatComposerState(input: ChatComposerStateInput): ChatComposerState {
   const hasSendableContent = input.draft.trim().length > 0 || input.hasImageAttachment === true;
   const canSend =
     hasSendableContent &&
-    !input.isSending &&
     !input.isLoadingConversation &&
     input.hasActiveEnabledModel;
 
   return {
     canSend,
-    editable: input.hasActiveEnabledModel && !input.isSending,
+    editable: input.hasActiveEnabledModel,
   };
 }
 
@@ -62,5 +142,25 @@ export function getReasoningDisclosureState(
     isExpanded,
     actionText: isExpanded ? "收起" : "展开",
     numberOfLines: isExpanded ? undefined : 1,
+  };
+}
+
+export function getLatestUserMessageId(messages: { id: string; role: string }[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      return messages[index].id;
+    }
+  }
+  return null;
+}
+
+export function getMessageActionState(input: MessageActionStateInput): MessageActionState {
+  return {
+    canCopy: input.message.content.trim().length > 0,
+    canEditAndRegenerate:
+      !input.isSending &&
+      input.message.role === "user" &&
+      input.message.id === input.latestUserMessageId &&
+      input.message.content.trim().length > 0,
   };
 }

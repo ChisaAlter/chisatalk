@@ -35,7 +35,7 @@ describe("chisatalk-client", () => {
       accessToken: "token-123",
       user: { id: "admin", username: "admin", displayName: "Admin" },
     });
-    expect(fetcher).toHaveBeenCalledWith("https://38.76.185.154:8789/v1/auth/login", {
+    expect(fetcher).toHaveBeenCalledWith("http://38.76.185.154:8789/v1/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: "admin", password: "secret" }),
@@ -52,7 +52,7 @@ describe("chisatalk-client", () => {
     const user = await getCurrentUser("token-123", fetcher);
 
     expect(user.displayName).toBe("Admin");
-    expect(fetcher).toHaveBeenCalledWith("https://38.76.185.154:8789/v1/auth/me", {
+    expect(fetcher).toHaveBeenCalledWith("http://38.76.185.154:8789/v1/auth/me", {
       method: "GET",
       headers: { Authorization: "Bearer token-123" },
     });
@@ -142,7 +142,7 @@ describe("chisatalk-client", () => {
     expect(result.nextCursor).toBe("cursor-2");
     expect(result.items[0]?.title).toBe("新的会话");
     expect(fetcher).toHaveBeenCalledWith(
-      "https://38.76.185.154:8789/v1/conversations?limit=25&cursor=cursor-1",
+      "http://38.76.185.154:8789/v1/conversations?limit=25&cursor=cursor-1",
       {
         method: "GET",
         headers: { Authorization: "Bearer token-123" },
@@ -173,7 +173,7 @@ describe("chisatalk-client", () => {
     ).resolves.toMatchObject({ title: "改名" });
 
     expect(createFetcher).toHaveBeenCalledWith(
-      "https://38.76.185.154:8789/v1/conversations",
+      "http://38.76.185.154:8789/v1/conversations",
       {
         method: "POST",
         headers: { Authorization: "Bearer token-123", "Content-Type": "application/json" },
@@ -279,7 +279,7 @@ describe("chisatalk-client", () => {
     ).resolves.toEqual({ userMessage, assistantMessage, conversation });
 
     expect(fetcher).toHaveBeenCalledWith(
-      "https://38.76.185.154:8789/v1/conversations/conv-1/chat-completions",
+      "http://38.76.185.154:8789/v1/conversations/conv-1/chat-completions",
       {
         method: "POST",
         headers: { Authorization: "Bearer token-123", "Content-Type": "application/json" },
@@ -291,6 +291,67 @@ describe("chisatalk-client", () => {
           systemPrompt: "你是 ChisaTalk。",
         }),
       },
+    );
+  });
+
+  it("sends the edited user message id when regenerating an answer", async () => {
+    const conversation = {
+      id: "conv-1",
+      title: "代理会话",
+      userId: "admin",
+      modelId: "glm",
+      archived: false,
+      createdAt: "2026-06-18T01:00:00.000Z",
+      updatedAt: "2026-06-18T01:00:02.000Z",
+    };
+    const userMessage = {
+      id: "msg-user",
+      conversationId: "conv-1",
+      role: "user",
+      content: "修改后的问题",
+      modelId: "glm",
+      clientMessageId: "client-2",
+      providerMeta: { source: "mobile" },
+      createdAt: "2026-06-18T01:00:01.000Z",
+    };
+    const assistantMessage = {
+      id: "msg-assistant-2",
+      conversationId: "conv-1",
+      role: "assistant",
+      content: "新的回答",
+      modelId: "glm",
+      clientMessageId: "server-2",
+      providerMeta: { source: "openai-compatible" },
+      createdAt: "2026-06-18T01:00:02.000Z",
+    };
+    const fetcher = vi.fn<ChisaTalkFetch>().mockResolvedValue(
+      jsonResponse({ userMessage, assistantMessage, conversation }),
+    );
+
+    await createChatCompletion(
+      "token-123",
+      "conv-1",
+      {
+        content: "修改后的问题",
+        modelId: "glm",
+        clientMessageId: "client-2",
+        editMessageId: "msg-user",
+        systemPrompt: "你是 ChisaTalk。",
+      },
+      fetcher,
+    );
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://38.76.185.154:8789/v1/conversations/conv-1/chat-completions",
+      expect.objectContaining({
+        body: JSON.stringify({
+          content: "修改后的问题",
+          modelId: "glm",
+          clientMessageId: "client-2",
+          editMessageId: "msg-user",
+          systemPrompt: "你是 ChisaTalk。",
+        }),
+      }),
     );
   });
 

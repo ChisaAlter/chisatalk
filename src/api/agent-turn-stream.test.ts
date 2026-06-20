@@ -74,7 +74,7 @@ describe("agent-turn-stream", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.method).toBe("POST");
-    expect(requests[0]?.url).toBe("https://38.76.185.154:8789/v1/conversations/conv-1/agent-turns/stream");
+    expect(requests[0]?.url).toBe("http://38.76.185.154:8789/v1/conversations/conv-1/agent-turns/stream");
     expect(requests[0]?.requestHeaders.Authorization).toBe("Bearer token-123");
     expect(JSON.parse(requests[0]?.body ?? "{}")).toMatchObject({
       content: "你好",
@@ -243,5 +243,68 @@ describe("agent-turn-stream", () => {
         },
       },
     ]);
+  });
+
+  it("aborts an in-flight Hermes stream when the caller cancels it", async () => {
+    const originalXhr = globalThis.XMLHttpRequest;
+    let abortCalled = false;
+
+    class MockXhr {
+      method = "";
+      url = "";
+      requestHeaders: Record<string, string> = {};
+      responseText = "";
+      status = 200;
+      readyState = 3;
+      aborted = false;
+      onprogress: (() => void) | null = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onreadystatechange: (() => void) | null = null;
+      onabort: (() => void) | null = null;
+
+      open(method: string, url: string) {
+        this.method = method;
+        this.url = url;
+      }
+
+      setRequestHeader(key: string, value: string) {
+        this.requestHeaders[key] = value;
+      }
+
+      send() {
+        // Keep the request open until the AbortController cancels it.
+      }
+
+      abort() {
+        this.aborted = true;
+        abortCalled = true;
+        this.onabort?.();
+      }
+    }
+
+    globalThis.XMLHttpRequest = MockXhr as unknown as typeof XMLHttpRequest;
+    const controller = new AbortController();
+
+    try {
+      const promise = streamAgentTurn({
+        accessToken: "token-123",
+        conversationId: "conv-1",
+        signal: controller.signal,
+        input: {
+          content: "ping",
+          modelId: "hermes",
+          clientMessageId: "client-1",
+          systemPrompt: "test",
+        },
+        onEvent: () => {},
+      });
+      controller.abort();
+
+      await expect(promise).rejects.toThrow("Hermes Agent 请求已取消");
+      expect(abortCalled).toBe(true);
+    } finally {
+      globalThis.XMLHttpRequest = originalXhr;
+    }
   });
 });

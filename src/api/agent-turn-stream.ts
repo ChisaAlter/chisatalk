@@ -18,6 +18,7 @@ export interface StreamAgentTurnInput {
   content: string;
   modelId: string;
   clientMessageId: string;
+  editMessageId?: string;
   providerMeta?: JsonValue;
   systemPrompt: string;
 }
@@ -169,6 +170,7 @@ export function createAgentTurnSseParser() {
 export async function streamAgentTurn(input: {
   accessToken: string;
   conversationId: string;
+  signal?: AbortSignal;
   input: StreamAgentTurnInput;
   onEvent: (event: AgentTurnStreamEvent) => void;
 }): Promise<void> {
@@ -177,17 +179,27 @@ export async function streamAgentTurn(input: {
     const parser = createAgentTurnSseParser();
     let readOffset = 0;
     let settled = false;
+    const abortError = new Error("Hermes Agent 请求已取消");
+    const cleanupAbortListener = () => {
+      input.signal?.removeEventListener("abort", handleAbort);
+    };
     const resolveOnce = () => {
       if (!settled) {
         settled = true;
+        cleanupAbortListener();
         resolve();
       }
     };
     const rejectOnce = (error: Error) => {
       if (!settled) {
         settled = true;
+        cleanupAbortListener();
         reject(error);
       }
+    };
+    const handleAbort = () => {
+      xhr.abort();
+      rejectOnce(abortError);
     };
     const readAvailableEvents = () => {
       const nextText = xhr.responseText.slice(readOffset);
@@ -228,6 +240,12 @@ export async function streamAgentTurn(input: {
       rejectOnce(new Error("Hermes Agent 请求失败"));
     };
     xhr.onerror = () => rejectOnce(new Error("Hermes Agent 网络请求失败"));
+    xhr.onabort = () => rejectOnce(abortError);
+    input.signal?.addEventListener("abort", handleAbort, { once: true });
+    if (input.signal?.aborted) {
+      handleAbort();
+      return;
+    }
     xhr.send(JSON.stringify(input.input));
   });
 }

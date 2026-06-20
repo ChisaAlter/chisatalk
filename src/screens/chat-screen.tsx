@@ -5,20 +5,28 @@ import {
   Easing,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StatusBar,
   Text,
   TextInput,
+  ToastAndroid,
   View,
 } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import { ImagePlus, LogOut, Menu, Plus, RefreshCw, Send, Settings, X } from "lucide-react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { AnimatedPressable } from "@/components/animated-pressable";
 import { getAssistantProfileFields } from "./assistant-profile-fields";
 import {
+  formatConversationListTitle,
   getChatComposerState,
+  getLatestUserMessageId,
+  getMessageRoleLabel,
+  getMessageActionState,
   getReasoningDisclosureState,
   getSendButtonAccessibilityState,
 } from "./chat-interaction";
@@ -59,6 +67,7 @@ interface ChatScreenProps {
   onClearImage: () => void;
   onSaveAssistantProfile: (profile: AssistantProfile) => Promise<void>;
   onSendMessage: (content: string, attachments: ChisaTalkImageAttachment[]) => Promise<void>;
+  onEditLastUserMessage: (messageId: string, content: string) => Promise<void>;
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -593,6 +602,50 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
   },
+  modalBackdrop: {
+    flex: 1,
+    justifyContent: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.38)",
+    paddingHorizontal: theme.spacing[4],
+  },
+  editPanel: {
+    borderRadius: theme.borderRadius.xl,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.borderStrong,
+    backgroundColor: theme.colors.surface1,
+    padding: theme.spacing[4],
+    gap: theme.spacing[3],
+    ...theme.shadow.lg,
+  },
+  editTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.lg,
+    fontWeight: theme.fontWeight.bold,
+    includeFontPadding: false,
+  },
+  editInput: {
+    minHeight: 132,
+    borderRadius: theme.borderRadius.lg,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface0,
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+    lineHeight: 22,
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[3],
+    textAlignVertical: "top",
+  },
+  editButtonRow: {
+    flexDirection: "row",
+    gap: theme.spacing[2],
+  },
+  editCancelButton: {
+    flex: 1,
+  },
+  editSubmitButton: {
+    flex: 1,
+  },
 }));
 
 function formatTime(value: string): string {
@@ -628,6 +681,7 @@ export function ChatScreen({
   onClearImage,
   onSaveAssistantProfile,
   onSendMessage,
+  onEditLastUserMessage,
 }: ChatScreenProps) {
   const { theme } = useUnistyles();
   const messagesScrollRef = useRef<ScrollView>(null);
@@ -638,6 +692,8 @@ export function ChatScreen({
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [expandedReasoningIds, setExpandedReasoningIds] = useState<Set<string>>(() => new Set());
   const [thinkingFrame, setThinkingFrame] = useState(0);
+  const [editingMessage, setEditingMessage] = useState<ChisaTalkMessage | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const [draft, setDraft] = useState("");
   const isDraftMultiline = draft.includes("\n") || draft.length > 28;
 
@@ -648,19 +704,22 @@ export function ChatScreen({
   }, []);
 
   const openSidebar = useCallback(() => {
+    sidebarProgress.stopAnimation();
     setSidebarOpen(true);
-    Animated.timing(sidebarProgress, {
+    Animated.spring(sidebarProgress, {
       toValue: 1,
-      duration: 240,
-      easing: Easing.out(Easing.cubic),
+      damping: 24,
+      stiffness: 260,
+      mass: 0.8,
       useNativeDriver: true,
     }).start();
   }, [sidebarProgress]);
 
   const closeSidebar = useCallback(() => {
+    sidebarProgress.stopAnimation();
     Animated.timing(sidebarProgress, {
       toValue: 0,
-      duration: 170,
+      duration: 160,
       easing: Easing.in(Easing.cubic),
       useNativeDriver: true,
     }).start(({ finished }) => {
@@ -719,6 +778,46 @@ export function ChatScreen({
     [onDeleteConversation],
   );
 
+  const showCopiedFeedback = useCallback(() => {
+    if (Platform.OS === "android") {
+      ToastAndroid.show("已复制", ToastAndroid.SHORT);
+      return;
+    }
+    Alert.alert("已复制");
+  }, []);
+
+  const copyMessage = useCallback(
+    async (message: ChisaTalkMessage) => {
+      await Clipboard.setStringAsync(message.content);
+      showCopiedFeedback();
+    },
+    [showCopiedFeedback],
+  );
+
+  const openEditMessage = useCallback((message: ChisaTalkMessage) => {
+    setEditingMessage(message);
+    setEditDraft(message.content);
+  }, []);
+
+  const closeEditMessage = useCallback(() => {
+    setEditingMessage(null);
+    setEditDraft("");
+  }, []);
+
+  const submitEditedMessage = useCallback(() => {
+    if (!editingMessage) {
+      return;
+    }
+    const content = editDraft.trim();
+    if (content.length === 0) {
+      Alert.alert("内容不能为空", "请输入要重新生成的问题。");
+      return;
+    }
+    const messageId = editingMessage.id;
+    closeEditMessage();
+    void onEditLastUserMessage(messageId, content);
+  }, [closeEditMessage, editDraft, editingMessage, onEditLastUserMessage]);
+
   useEffect(() => {
     scrollToLatest(true);
   }, [isSending, messages.length, scrollToLatest, selectedConversation?.id]);
@@ -748,6 +847,52 @@ export function ChatScreen({
     }
     return models.find((model) => model.id === selectedConversation.modelId) ?? null;
   }, [models, selectedConversation?.modelId, selectedModelId]);
+  const userRoleLabel = getMessageRoleLabel({
+    role: "user",
+    userDisplayName: user.displayName,
+    assistantName: assistantProfile.aiName,
+  });
+  const assistantRoleLabel = getMessageRoleLabel({
+    role: "assistant",
+    userDisplayName: user.displayName,
+    assistantName: assistantProfile.aiName,
+  });
+  const participantLabels = useMemo(
+    () => [userRoleLabel, assistantRoleLabel],
+    [assistantRoleLabel, userRoleLabel],
+  );
+  const visibleConversationTitle = selectedConversation
+    ? formatConversationListTitle(selectedConversation.title, participantLabels)
+    : assistantRoleLabel;
+  const latestUserMessageId = useMemo(() => getLatestUserMessageId(messages), [messages]);
+
+  const openMessageActions = useCallback(
+    (message: ChisaTalkMessage) => {
+      const actionState = getMessageActionState({
+        message,
+        latestUserMessageId,
+        isSending,
+      });
+      const buttons: {
+        text: string;
+        onPress?: () => void;
+        style?: "default" | "cancel" | "destructive";
+      }[] = [];
+
+      if (actionState.canCopy) {
+        buttons.push({ text: "复制", onPress: () => void copyMessage(message) });
+      }
+      if (actionState.canEditAndRegenerate) {
+        buttons.push({ text: "编辑并重答", onPress: () => openEditMessage(message) });
+      }
+      buttons.push({ text: "取消", style: "cancel" });
+
+      if (buttons.length > 1) {
+        Alert.alert("消息操作", undefined, buttons);
+      }
+    },
+    [copyMessage, isSending, latestUserMessageId, openEditMessage],
+  );
 
   const composerState = getChatComposerState({
     draft,
@@ -780,28 +925,36 @@ export function ChatScreen({
     inputRange: [0, 1],
     outputRange: [0, 1],
   });
+  const sidebarScale = sidebarProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.985, 1],
+  });
+  const sidebarOpacity = sidebarProgress.interpolate({
+    inputRange: [0, 0.4, 1],
+    outputRange: [0, 0.72, 1],
+  });
 
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar
         barStyle={theme.colorScheme === "dark" ? "light-content" : "dark-content"}
-        backgroundColor={theme.colors.surface0}
+        backgroundColor={theme.colors.statusBar}
       />
       <View style={styles.topBar}>
-        <Pressable accessibilityRole="button" onPress={openSidebar} style={styles.iconButton}>
+        <AnimatedPressable accessibilityRole="button" onPress={openSidebar} style={styles.iconButton}>
           <Menu size={20} color={theme.colors.foreground} />
-        </Pressable>
+        </AnimatedPressable>
         <View style={styles.titleBlock}>
           <Text style={styles.appName} numberOfLines={1}>
-            {selectedConversation?.title ?? "ChisaTalk"}
+            {visibleConversationTitle}
           </Text>
           <Text style={styles.subText} numberOfLines={1}>
             {activeModel ? modelTitle(activeModel) : "Hermes Agent"}
           </Text>
         </View>
-        <Pressable accessibilityRole="button" onPress={() => void onRefresh()} style={styles.iconButton}>
+        <AnimatedPressable accessibilityRole="button" onPress={() => void onRefresh()} style={styles.iconButton}>
           <RefreshCw size={18} color={theme.colors.foreground} />
-        </Pressable>
+        </AnimatedPressable>
       </View>
 
       {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
@@ -820,6 +973,11 @@ export function ChatScreen({
           >
             {messages.map((message) => {
               const isUser = message.role === "user";
+              const roleLabel = getMessageRoleLabel({
+                role: message.role,
+                userDisplayName: user.displayName,
+                assistantName: assistantProfile.aiName,
+              });
               const imageAttachments = readMessageImageAttachments(message.providerMeta);
               const reasoning = !isUser ? readMessageReasoning(message.providerMeta) : null;
               const reasoningDisclosure = getReasoningDisclosureState({
@@ -827,23 +985,26 @@ export function ChatScreen({
                 expandedReasoningIds,
               });
               return (
-                <View
+                <AnimatedPressable
                   key={message.id}
+                  accessibilityRole="button"
+                  onLongPress={() => openMessageActions(message)}
+                  staticMotion
                   style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}
                 >
                   <Text style={[styles.roleText, isUser ? styles.userRoleText : styles.assistantRoleText]}>
-                    {isUser ? "你" : "ChisaTalk"}
+                    {roleLabel}
                   </Text>
                   {reasoning ? (
                     <View style={styles.reasoningCard}>
-                      <Pressable
+                      <AnimatedPressable
                         accessibilityRole="button"
                         onPress={() => toggleReasoning(message.id)}
                         style={styles.reasoningHeader}
                       >
                         <Text style={styles.reasoningTitle}>思考过程</Text>
                         <Text style={styles.reasoningMeta}>{reasoningDisclosure.actionText}</Text>
-                      </Pressable>
+                      </AnimatedPressable>
                       <Text
                         numberOfLines={reasoningDisclosure.numberOfLines}
                         style={styles.reasoningBody}
@@ -864,12 +1025,12 @@ export function ChatScreen({
                       style={styles.messageImage}
                     />
                   ))}
-                </View>
+                </AnimatedPressable>
               );
             })}
             {isSending ? (
               <View style={[styles.messageBubble, styles.assistantBubble]}>
-                <Text style={[styles.roleText, styles.assistantRoleText]}>ChisaTalk</Text>
+                <Text style={[styles.roleText, styles.assistantRoleText]}>{assistantRoleLabel}</Text>
                 <View style={styles.reasoningCard}>
                   <View style={styles.reasoningHeader}>
                     <Text style={styles.reasoningTitle}>{agentProgressText ? "Hermes Agent" : "思考中"}</Text>
@@ -906,7 +1067,7 @@ export function ChatScreen({
             </View>
             <Text style={styles.emptyTitle}>还没有会话</Text>
             <Text style={styles.emptyBody}>直接发送第一条消息，系统会自动创建 Hermes 会话。</Text>
-            <Pressable
+            <AnimatedPressable
               accessibilityRole="button"
               disabled={!activeModel?.enabled}
               onPress={() => void onCreateConversation()}
@@ -914,7 +1075,7 @@ export function ChatScreen({
             >
               <Plus size={16} color={theme.colors.accentForeground} />
               <Text style={styles.emptyActionText}>新建会话</Text>
-            </Pressable>
+            </AnimatedPressable>
           </View>
         )}
 
@@ -923,14 +1084,14 @@ export function ChatScreen({
             <View style={styles.imagePreviewRow}>
               <View>
                 <Image source={{ uri: pendingImage.dataUrl }} style={styles.imagePreview} />
-                <Pressable accessibilityRole="button" onPress={onClearImage} style={styles.removeImageButton}>
+                <AnimatedPressable accessibilityRole="button" onPress={onClearImage} style={styles.removeImageButton}>
                   <X size={16} color="#ffffff" />
-                </Pressable>
+                </AnimatedPressable>
               </View>
             </View>
           ) : null}
           <View style={styles.composer}>
-            <Pressable
+            <AnimatedPressable
               accessibilityRole="button"
               accessibilityState={{ disabled: isSending || isPickingImage }}
               disabled={isSending || isPickingImage}
@@ -938,7 +1099,7 @@ export function ChatScreen({
               style={[styles.attachButton, isPickingImage ? styles.sendButtonDisabled : null]}
             >
               <ImagePlus size={19} color={theme.colors.foreground} />
-            </Pressable>
+            </AnimatedPressable>
             <TextInput
               editable={composerState.editable}
               multiline={isDraftMultiline}
@@ -949,7 +1110,7 @@ export function ChatScreen({
               style={[styles.input, isDraftMultiline ? styles.inputMultiline : styles.inputSingleLine]}
               value={draft}
             />
-            <Pressable
+            <AnimatedPressable
               accessibilityRole="button"
               accessibilityState={sendButtonAccessibilityState}
               disabled={!composerState.canSend}
@@ -957,7 +1118,7 @@ export function ChatScreen({
               style={[styles.sendButton, !composerState.canSend ? styles.sendButtonDisabled : null]}
             >
               <Send size={18} color={theme.colors.accentForeground} />
-            </Pressable>
+            </AnimatedPressable>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -972,7 +1133,15 @@ export function ChatScreen({
               style={styles.backdropPressable}
             />
           </Animated.View>
-          <Animated.View style={[styles.sidebar, { transform: [{ translateX: sidebarTranslateX }] }]}>
+          <Animated.View
+            style={[
+              styles.sidebar,
+              {
+                opacity: sidebarOpacity,
+                transform: [{ translateX: sidebarTranslateX }, { scale: sidebarScale }],
+              },
+            ]}
+          >
             <View style={styles.sidebarHeader}>
               <View style={styles.sidebarBrandRow}>
                 <View style={styles.sidebarMark}>
@@ -983,13 +1152,13 @@ export function ChatScreen({
                   <Text style={styles.userText}>已登录：{user.displayName}</Text>
                 </View>
               </View>
-              <Pressable accessibilityRole="button" onPress={closeSidebar} style={styles.iconButton}>
+              <AnimatedPressable accessibilityRole="button" onPress={closeSidebar} style={styles.iconButton}>
                 <X size={18} color={theme.colors.foreground} />
-              </Pressable>
+              </AnimatedPressable>
             </View>
 
             <View style={styles.actionStack}>
-              <Pressable
+              <AnimatedPressable
                 accessibilityRole="button"
                 onPress={() => {
                   closeSidebar();
@@ -999,32 +1168,32 @@ export function ChatScreen({
               >
                 <Plus size={16} color={theme.colors.accentForeground} />
                 <Text style={[styles.actionText, styles.actionTextPrimary]}>新建会话</Text>
-              </Pressable>
-              <Pressable
+              </AnimatedPressable>
+              <AnimatedPressable
                 accessibilityRole="button"
                 onPress={openSettings}
                 style={styles.actionButton}
               >
                 <Settings size={16} color={theme.colors.foreground} />
                 <Text style={styles.actionText}>人设设置</Text>
-              </Pressable>
+              </AnimatedPressable>
               <View style={styles.secondaryActionRow}>
-                <Pressable
+                <AnimatedPressable
                   accessibilityRole="button"
                   onPress={() => void onRefresh()}
                   style={[styles.actionButton, styles.secondaryActionButton]}
                 >
                   <RefreshCw size={16} color={theme.colors.foreground} />
                   <Text style={styles.actionText}>{isRefreshing ? "刷新中" : "刷新"}</Text>
-                </Pressable>
-                <Pressable
+                </AnimatedPressable>
+                <AnimatedPressable
                   accessibilityRole="button"
                   onPress={() => void onLogout()}
                   style={[styles.actionButton, styles.secondaryActionButton]}
                 >
                   <LogOut size={16} color={theme.colors.foreground} />
                   <Text style={styles.actionText}>退出</Text>
-                </Pressable>
+                </AnimatedPressable>
               </View>
             </View>
 
@@ -1058,15 +1227,15 @@ export function ChatScreen({
                       保存后会用于下一次发送消息的系统提示，不会改写历史会话。
                     </Text>
                     <View style={styles.settingsButtonRow}>
-                      <Pressable
+                      <AnimatedPressable
                         accessibilityRole="button"
                         disabled={isSavingSettings}
                         onPress={closeSettings}
                         style={[styles.actionButton, styles.secondaryActionButton]}
                       >
                         <Text style={styles.actionText}>取消</Text>
-                      </Pressable>
-                      <Pressable
+                      </AnimatedPressable>
+                      <AnimatedPressable
                         accessibilityRole="button"
                         accessibilityState={{ busy: isSavingSettings, disabled: isSavingSettings }}
                         disabled={isSavingSettings}
@@ -1081,7 +1250,7 @@ export function ChatScreen({
                         <Text style={[styles.actionText, styles.actionTextPrimary]}>
                           {isSavingSettings ? "保存中" : "保存"}
                         </Text>
-                      </Pressable>
+                      </AnimatedPressable>
                     </View>
                   </View>
                 </ScrollView>
@@ -1094,7 +1263,7 @@ export function ChatScreen({
                     <Text style={styles.emptySidebar}>暂无历史会话。</Text>
                   ) : (
                     conversations.map((conversation) => (
-                      <Pressable
+                      <AnimatedPressable
                         accessibilityRole="button"
                         accessibilityHint="长按删除会话"
                         key={conversation.id}
@@ -1109,10 +1278,10 @@ export function ChatScreen({
                         ]}
                       >
                         <Text style={styles.conversationTitle} numberOfLines={1}>
-                          {conversation.title}
+                          {formatConversationListTitle(conversation.title, participantLabels)}
                         </Text>
                         <Text style={styles.conversationTime}>{formatTime(conversation.updatedAt)}</Text>
-                      </Pressable>
+                      </AnimatedPressable>
                     ))
                   )}
                 </ScrollView>
@@ -1121,6 +1290,48 @@ export function ChatScreen({
           </Animated.View>
         </>
       ) : null}
+      <Modal
+        animationType="fade"
+        onRequestClose={closeEditMessage}
+        transparent
+        visible={editingMessage !== null}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.editPanel}>
+            <Text style={styles.editTitle}>修改问题</Text>
+            <TextInput
+              autoFocus
+              multiline
+              onChangeText={setEditDraft}
+              placeholder="输入新的问题"
+              placeholderTextColor={theme.colors.foregroundMuted}
+              style={styles.editInput}
+              value={editDraft}
+            />
+            <View style={styles.editButtonRow}>
+              <AnimatedPressable
+                accessibilityRole="button"
+                onPress={closeEditMessage}
+                style={[styles.actionButton, styles.secondaryActionButton, styles.editCancelButton]}
+              >
+                <Text style={styles.actionText}>取消</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
+                accessibilityRole="button"
+                onPress={submitEditedMessage}
+                style={[
+                  styles.actionButton,
+                  styles.actionButtonPrimary,
+                  styles.editSubmitButton,
+                  editDraft.trim().length === 0 ? styles.sendButtonDisabled : null,
+                ]}
+              >
+                <Text style={[styles.actionText, styles.actionTextPrimary]}>重新生成</Text>
+              </AnimatedPressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
