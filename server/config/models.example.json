@@ -1,17 +1,28 @@
 {
+  "updatedAt": "2026-06-18T00:00:00.000Z",
   "models": [
     {
-      "id": "hermes",
-      "displayName": "Hermes",
-      "description": "Hermes model managed by ChisaTalk server",
-      "capabilities": ["text", "tools"],
-      "enabled": false,
-      "provider": {
-        "type": "openai-compatible",
-        "chatCompletionsUrl": "https://example.com/v1/chat/completions",
-        "apiKeyEnv": "HERMES_API_KEY",
-        "model": "hermes"
-      }
+      "id": "xiaomi-mimo-v25",
+      "label": "小米 MiMo v2.5",
+      "provider": "xiaomi",
+      "providerType": "openai-compatible",
+      "chatCompletionsUrl": "https://api.xiaomimimo.com/v1/chat/completions",
+      "apiKey": "replace-with-xiaomi-mimo-api-key",
+      "model": "mimo-v2.5",
+      "enabled": true,
+      "supportsStreaming": false,
+      "defaultParameters": {}
+    },
+    {
+      "id": "hermes-agent",
+      "label": "Hermes Agent",
+      "provider": "hermes",
+      "providerType": "hermes-agent",
+      "model": "hermes-agent",
+      "enabled": true,
+      "supportsStreaming": true,
+      "description": "通过 ChisaTalk Server 代理的 Hermes Agent，支持工具和长期记忆。",
+      "defaultParameters": {}
     }
   ]
 }
