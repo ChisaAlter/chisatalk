@@ -21,6 +21,15 @@ interface SendButtonAccessibilityState {
   disabled: boolean;
 }
 
+interface PendingHermesApprovalActionStateInput {
+  providerMeta: unknown;
+  isSending: boolean;
+}
+
+interface PendingHermesApprovalActionState {
+  canRespond: boolean;
+}
+
 interface ReasoningDisclosureStateInput {
   messageId: string;
   expandedReasoningIds: ReadonlySet<string>;
@@ -29,7 +38,7 @@ interface ReasoningDisclosureStateInput {
 interface ReasoningDisclosureState {
   isExpanded: boolean;
   actionText: "展开" | "收起";
-  numberOfLines: 1 | undefined;
+  numberOfLines: number | undefined;
 }
 
 interface MessageRoleLabelInput {
@@ -118,6 +127,7 @@ export function getChatComposerState(input: ChatComposerStateInput): ChatCompose
   const canSend =
     hasSendableContent &&
     !input.isLoadingConversation &&
+    !input.isSending &&
     input.hasActiveEnabledModel;
 
   return {
@@ -130,7 +140,23 @@ export function getSendButtonAccessibilityState(
   input: SendButtonAccessibilityStateInput,
 ): SendButtonAccessibilityState {
   return {
-    disabled: !input.canSend,
+    disabled: !input.isSending && !input.canSend,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function getPendingHermesApprovalActionState(
+  input: PendingHermesApprovalActionStateInput,
+): PendingHermesApprovalActionState {
+  if (input.isSending || !isRecord(input.providerMeta)) {
+    return { canRespond: false };
+  }
+  const pendingApproval = input.providerMeta.pendingApproval;
+  return {
+    canRespond: isRecord(pendingApproval) && typeof pendingApproval.runId === "string",
   };
 }
 
@@ -141,7 +167,7 @@ export function getReasoningDisclosureState(
   return {
     isExpanded,
     actionText: isExpanded ? "收起" : "展开",
-    numberOfLines: isExpanded ? undefined : 1,
+    numberOfLines: isExpanded ? undefined : 4,
   };
 }
 

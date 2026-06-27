@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatTableRowsForDisplay, parseMessageContent } from "./message-content-parser";
+import { formatTableGridForDisplay, parseMessageContent } from "./message-content-parser";
 
 describe("parseMessageContent", () => {
   it("parses markdown tables without exposing separator rows", () => {
@@ -20,31 +20,22 @@ describe("parseMessageContent", () => {
     ]);
   });
 
-  it("normalizes table rows for a vertical mobile display", () => {
+  it("normalizes table rows for a horizontal mobile table grid", () => {
     expect(
-      formatTableRowsForDisplay({
+      formatTableGridForDisplay({
         headers: ["时间", "入弯前", "出弯后"],
         rows: [
           ["10 分钟", "外侧", "内侧"],
           ["20 分钟", "减速"],
         ],
       }),
-    ).toEqual([
-      {
-        cells: [
-          { header: "时间", value: "10 分钟" },
-          { header: "入弯前", value: "外侧" },
-          { header: "出弯后", value: "内侧" },
-        ],
-      },
-      {
-        cells: [
-          { header: "时间", value: "20 分钟" },
-          { header: "入弯前", value: "减速" },
-          { header: "出弯后", value: "" },
-        ],
-      },
-    ]);
+    ).toEqual({
+      headers: ["时间", "入弯前", "出弯后"],
+      rows: [
+        ["10 分钟", "外侧", "内侧"],
+        ["20 分钟", "减速", ""],
+      ],
+    });
   });
 
   it("keeps pipe text inside fenced code blocks as code", () => {

@@ -17,8 +17,10 @@ const HERMES_SEARCH_CONSENT_PROMPT =
   [
     "用户已同意 Hermes Agent 在需要时直接使用联网搜索工具获取公开信息；不要再询问是否同意联网搜索。",
     "凡是涉及天气、预报、今天、明天、昨天、本周、近期、最新、新闻、价格、政策、法规、库存、版本、日程、赛事、汇率等可能随时间变化的内容，必须先联网搜索或调用可用搜索工具核对当前信息，再基于搜索结果回答。",
+    "凡是涉及 GitHub、GitLab、仓库、repo、项目主页、源码地址、开源项目是否存在、star 数、issue、release、README 或代码位置的问题，必须优先调用 web_search 查询公开网页或 GitHub 页面；不要凭记忆回答，也不要改用 execute_code 运行 curl 或脚本来替代 web_search。",
     "回答这类时效问题时，不要凭模型记忆或旧上下文直接给结论；如果搜索工具不可用，应明确说明无法实时核验。",
   ].join("\n");
+const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
 
 let lastTimestampMs = 0;
 let databaseWriteQueue = Promise.resolve();
@@ -36,6 +38,112 @@ function isRecord(value) {
 
 function requestId() {
   return `req_${randomBytes(8).toString("hex")}`;
+}
+
+function findGitHubRepoRefs(text) {
+  if (typeof text !== "string" || !/(github|仓库|repo|开源项目|项目)/iu.test(text)) {
+    return [];
+  }
+
+  const refs = new Map();
+  const patterns = [
+    /(?:https?:\/\/)?github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9._-]{1,100})(?:\.git)?/giu,
+    /\b([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9._-]{1,100})(?:\.git)?\b/gu,
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const owner = match[1];
+      const repo = match[2]?.replace(/(?:\.git)?[).,，。；;:：!?！？]+$/u, "");
+      if (!owner || !repo || repo.includes("/")) {
+        continue;
+      }
+      refs.set(`${owner}/${repo}`.toLowerCase(), { owner, repo });
+      if (refs.size >= 3) {
+        return [...refs.values()];
+      }
+    }
+  }
+  return [...refs.values()];
+}
+
+async function fetchGitHubRepoLookup(ref, options) {
+  const baseUrl = (options.githubApiBaseUrl ?? DEFAULT_GITHUB_API_BASE_URL).replace(/\/+$/, "");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(`${baseUrl}/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}`, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "ChisaTalk-Server",
+      },
+    });
+    if (response.status === 404) {
+      return {
+        fullName: `${ref.owner}/${ref.repo}`,
+        exists: false,
+        note: "GitHub API 返回 404，公开仓库未找到。",
+      };
+    }
+    if (!response.ok) {
+      return {
+        fullName: `${ref.owner}/${ref.repo}`,
+        exists: null,
+        note: `GitHub API 返回 HTTP ${response.status}，无法精确核验。`,
+      };
+    }
+    const payload = await readJsonResponse(response);
+    return {
+      fullName:
+        isRecord(payload) && typeof payload.full_name === "string"
+          ? payload.full_name
+          : `${ref.owner}/${ref.repo}`,
+      exists: true,
+      htmlUrl: isRecord(payload) && typeof payload.html_url === "string" ? payload.html_url : null,
+      private: isRecord(payload) && typeof payload.private === "boolean" ? payload.private : null,
+      archived: isRecord(payload) && typeof payload.archived === "boolean" ? payload.archived : null,
+      pushedAt: isRecord(payload) && typeof payload.pushed_at === "string" ? payload.pushed_at : null,
+    };
+  } catch (error) {
+    return {
+      fullName: `${ref.owner}/${ref.repo}`,
+      exists: null,
+      note: `GitHub API 请求失败：${error instanceof Error ? error.message : "unknown error"}`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function buildGitHubLookupSystemMessage(text, options) {
+  const refs = findGitHubRepoRefs(text);
+  if (refs.length === 0) {
+    return null;
+  }
+  const lookups = await Promise.all(refs.map((ref) => fetchGitHubRepoLookup(ref, options)));
+  const lines = lookups.map((lookup) => {
+    if (lookup.exists === true) {
+      return [
+        `- ${lookup.fullName}: 存在`,
+        lookup.htmlUrl ? `链接 ${lookup.htmlUrl}` : null,
+        typeof lookup.private === "boolean" ? `private=${lookup.private}` : null,
+        typeof lookup.archived === "boolean" ? `archived=${lookup.archived}` : null,
+        lookup.pushedAt ? `pushed_at=${lookup.pushedAt}` : null,
+      ]
+        .filter(Boolean)
+        .join("，");
+    }
+    if (lookup.exists === false) {
+      return `- ${lookup.fullName}: 不存在，${lookup.note}`;
+    }
+    return `- ${lookup.fullName}: 无法核验，${lookup.note}`;
+  });
+  return [
+    "GitHub 精确仓库查询结果（由 ChisaTalk Server 通过 GitHub API 实时核验）：",
+    ...lines,
+    "回答 GitHub 仓库是否存在时，以上精确查询结果优先于通用网页搜索结果。",
+  ].join("\n");
 }
 
 function sendJson(response, status, payload) {
@@ -567,6 +675,78 @@ function getAssistantReasoningDelta(payload) {
   return "";
 }
 
+function normalizeApprovalCommand(content) {
+  const normalized = content.trim().toLowerCase();
+  if (["批准", "同意", "允许", "/approve", "approve", "approved", "allow"].includes(normalized)) {
+    return { choice: "once" };
+  }
+  if (["本次批准", "批准一次", "/approve once", "approve once"].includes(normalized)) {
+    return { choice: "once" };
+  }
+  if (["本会话批准", "会话批准", "批准本会话", "/approve session", "approve session"].includes(normalized)) {
+    return { choice: "session" };
+  }
+  if (["永久批准", "总是批准", "/approve always", "approve always"].includes(normalized)) {
+    return { choice: "always" };
+  }
+  if (["拒绝", "否决", "不批准", "/deny", "deny"].includes(normalized)) {
+    return { choice: "deny" };
+  }
+  return null;
+}
+
+function buildHermesInstructions(systemMessages) {
+  return systemMessages.map((message) => message.content).join("\n\n").trim();
+}
+
+function toHermesRunHistory(messages) {
+  return messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({
+      role: message.role,
+      content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
+    }));
+}
+
+function getHermesRunId(payload) {
+  if (!isRecord(payload)) {
+    return "";
+  }
+  return typeof payload.run_id === "string" ? payload.run_id : "";
+}
+
+function getHermesRunEventName(payload, fallbackEvent) {
+  if (isRecord(payload) && typeof payload.event === "string") {
+    return payload.event;
+  }
+  return fallbackEvent;
+}
+
+function getHermesRunDelta(payload) {
+  if (!isRecord(payload)) {
+    return "";
+  }
+  return typeof payload.delta === "string" ? payload.delta : "";
+}
+
+function getHermesRunOutput(payload) {
+  if (!isRecord(payload)) {
+    return "";
+  }
+  return typeof payload.output === "string" ? payload.output : "";
+}
+
+function getHermesToolProgress(payload, eventName) {
+  if (!isRecord(payload)) {
+    return { event: eventName };
+  }
+  const progress = { ...payload, event: eventName };
+  if (typeof progress.toolName !== "string" && typeof progress.tool === "string") {
+    progress.toolName = progress.tool;
+  }
+  return progress;
+}
+
 function readImageAttachments(providerMeta) {
   if (!isRecord(providerMeta) || !Array.isArray(providerMeta.attachments)) {
     return [];
@@ -711,6 +891,7 @@ export async function createChisaTalkServer(options) {
   const modelsPath = resolve(options.modelsPath);
   const SQL = await initSqlJs({ locateFile: () => SQL_WASM_PATH });
   const db = await loadDatabase(SQL, databasePath);
+  const activeHermesApprovals = new Map();
 
   await initializeSchema(db, databasePath);
 
@@ -1032,6 +1213,204 @@ export async function createChisaTalkServer(options) {
     });
   }
 
+  function rememberHermesApproval(conversationId, approval) {
+    activeHermesApprovals.set(conversationId, {
+      ...approval,
+      createdAt: Date.now(),
+    });
+  }
+
+  function clearHermesApproval(conversationId, runId) {
+    const current = activeHermesApprovals.get(conversationId);
+    if (!current || !runId || current.runId === runId) {
+      activeHermesApprovals.delete(conversationId);
+    }
+  }
+
+  function findPendingHermesApproval(conversationId) {
+    const active = activeHermesApprovals.get(conversationId);
+    if (active && Date.now() - active.createdAt < 30 * 60 * 1000) {
+      return active;
+    }
+
+    const rows = selectAll(
+      db,
+      `
+        SELECT * FROM messages
+        WHERE conversation_id = ? AND role = 'assistant'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 20
+      `,
+      [conversationId],
+    );
+    for (const row of rows) {
+      const message = rowToMessage(row);
+      if (!isRecord(message.providerMeta) || message.providerMeta.source !== "hermes-agent") {
+        continue;
+      }
+      const pendingApproval = message.providerMeta.pendingApproval;
+      if (!isRecord(pendingApproval) || typeof pendingApproval.runId !== "string") {
+        continue;
+      }
+      return {
+        runId: pendingApproval.runId,
+        event: pendingApproval.event ?? null,
+      };
+    }
+    return null;
+  }
+
+  async function resolveHermesApproval(approval, command) {
+    const upstreamResponse = await fetch(
+      `${getHermesApiBaseUrl(options)}/runs/${encodeURIComponent(approval.runId)}/approval`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${options.hermesApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ choice: command.choice }),
+      },
+    );
+    if (!upstreamResponse.ok) {
+      throw Object.assign(new Error("Hermes Agent 审批失败"), {
+        status: 502,
+        code: "hermes_approval_failed",
+      });
+    }
+    return readJsonResponse(upstreamResponse);
+  }
+
+  async function stopHermesRun(runId) {
+    try {
+      await fetch(`${getHermesApiBaseUrl(options)}/runs/${encodeURIComponent(runId)}/stop`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${options.hermesApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reason: "client_disconnected" }),
+      });
+    } catch (error) {
+      console.error("[ChisaTalkServer] Hermes stop failed", error);
+    }
+  }
+
+  async function streamApprovedHermesRunContinuation(response, { user, conversationId, modelId, runId, requestId, signal }) {
+    const upstreamResponse = await fetch(`${getHermesApiBaseUrl(options)}/runs/${encodeURIComponent(runId)}/events`, {
+      method: "GET",
+      signal,
+      headers: {
+        Authorization: `Bearer ${options.hermesApiKey}`,
+        "X-Hermes-Session-Key": `chisatalk-user-${user.id}`,
+      },
+    });
+
+    if (!upstreamResponse.ok) {
+      writeSse(response, "error", {
+        code: "hermes_events_failed",
+        message: "Hermes Agent 事件流调用失败",
+        requestId,
+      });
+      response.end();
+      return;
+    }
+
+    let assistantContent = "";
+    const toolProgress = [];
+    let completed = false;
+
+    for await (const upstreamEvent of readSseEvents(upstreamResponse.body)) {
+      if (upstreamEvent.data === "[DONE]") {
+        break;
+      }
+
+      let payload;
+      try {
+        payload = JSON.parse(upstreamEvent.data);
+      } catch (error) {
+        console.error("[ChisaTalkServer] Hermes SSE parse failed", error);
+        continue;
+      }
+
+      const eventName = getHermesRunEventName(payload, upstreamEvent.event);
+      if (eventName === "approval.responded") {
+        clearHermesApproval(conversationId, runId);
+        const progress = getHermesToolProgress(payload, eventName);
+        toolProgress.push(progress);
+        writeSse(response, "tool_progress", progress);
+        continue;
+      }
+
+      if (eventName.startsWith("tool.") || eventName === "hermes.tool.progress") {
+        const progress = getHermesToolProgress(payload, eventName);
+        toolProgress.push(progress);
+        writeSse(response, "tool_progress", progress);
+        continue;
+      }
+
+      if (eventName === "run.completed") {
+        completed = true;
+        clearHermesApproval(conversationId, runId);
+        if (assistantContent.length === 0) {
+          const output = getHermesRunOutput(payload);
+          if (output.length > 0) {
+            assistantContent = output;
+            writeSse(response, "assistant_delta", { delta: output });
+          }
+        }
+        continue;
+      }
+
+      if (eventName === "run.failed" || eventName === "run.cancelled") {
+        writeSse(response, "error", {
+          code: eventName === "run.cancelled" ? "hermes_run_cancelled" : "hermes_run_failed",
+          message:
+            isRecord(payload) && typeof payload.error === "string"
+              ? payload.error
+              : "Hermes Agent 执行失败",
+          requestId,
+        });
+        response.end();
+        return;
+      }
+
+      const delta = eventName === "message.delta" ? getHermesRunDelta(payload) : getAssistantDelta(payload);
+      if (delta.length > 0) {
+        assistantContent += delta;
+        writeSse(response, "assistant_delta", { delta });
+      }
+    }
+
+    if (assistantContent.length === 0) {
+      writeSse(response, "error", {
+        code: "empty_hermes_response",
+        message: completed ? "Hermes Agent 没有返回内容" : "Hermes Agent 审批后没有返回内容",
+        requestId,
+      });
+      response.end();
+      return;
+    }
+
+    const assistantResult = await insertMessage(db, databasePath, conversationId, {
+      role: "assistant",
+      content: assistantContent,
+      modelId,
+      clientMessageId: `server_${randomUUID()}`,
+      providerMeta: {
+        source: "hermes-agent",
+        hermesRunId: runId,
+        toolProgress,
+      },
+    });
+    writeSse(response, "assistant_message", {
+      message: assistantResult.message,
+      conversation: assistantResult.conversation,
+    });
+    writeSse(response, "done", { ok: true });
+    response.end();
+  }
+
   async function handleAgentTurnStream(request, response, user, conversationId, id) {
     await getOwnedConversation(user.id, conversationId);
     const body = await readJsonBody(request);
@@ -1096,45 +1475,111 @@ export async function createChisaTalkServer(options) {
         conversation: userResult.conversation,
       });
 
+      const approvalCommand = normalizeApprovalCommand(content);
+      if (approvalCommand) {
+        const approval = findPendingHermesApproval(conversationId);
+        if (!approval) {
+          const assistantResult = await insertMessage(db, databasePath, conversationId, {
+            role: "assistant",
+            content: "没有找到正在等待安全审核的 Hermes 命令，可能已经处理或过期。",
+            modelId,
+            clientMessageId: `server_${randomUUID()}`,
+            providerMeta: { source: "hermes-agent", approvalResponse: { resolved: 0 } },
+          });
+          writeSse(response, "assistant_message", {
+            message: assistantResult.message,
+            conversation: assistantResult.conversation,
+          });
+          writeSse(response, "done", { ok: true });
+          response.end();
+          return;
+        }
+
+        const approvalPayload = await resolveHermesApproval(approval, approvalCommand);
+        clearHermesApproval(conversationId, approval.runId);
+        writeSse(response, "approval_response", {
+          runId: approval.runId,
+          choice: approvalCommand.choice,
+          payload: approvalPayload,
+        });
+        const approvalEventsAbortController = new AbortController();
+        let approvalContinuationEnded = false;
+        const abortApprovalEvents = () => {
+          if (!approvalContinuationEnded) {
+            approvalEventsAbortController.abort();
+            void stopHermesRun(approval.runId);
+          }
+        };
+        request.once("close", abortApprovalEvents);
+        response.once("close", abortApprovalEvents);
+        try {
+          await streamApprovedHermesRunContinuation(response, {
+            user,
+            conversationId,
+            modelId,
+            runId: approval.runId,
+            requestId: id,
+            signal: approvalEventsAbortController.signal,
+          });
+        } finally {
+          approvalContinuationEnded = true;
+          request.off("close", abortApprovalEvents);
+          response.off("close", abortApprovalEvents);
+        }
+        return;
+      }
+
       const messageRows = selectAll(
         db,
         "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
         [conversationId],
       );
-      const messages = messageRows.map(rowToMessage).map(toOpenAiCompatibleMessage);
+      const messageObjects = messageRows.map(rowToMessage);
+      const historyMessages = messageObjects
+        .filter((message) => message.id !== userResult.message.id)
+        .map(toOpenAiCompatibleMessage);
       const hermesPreset = await readHermesPreset(options);
+      const githubLookupMessage = await buildGitHubLookupSystemMessage(content, options);
       const hermesSystemMessages = [
         hermesPreset ? { role: "system", content: hermesPreset } : null,
         systemPrompt ? { role: "system", content: systemPrompt } : null,
+        githubLookupMessage ? { role: "system", content: githubLookupMessage } : null,
         { role: "system", content: HERMES_SEARCH_CONSENT_PROMPT },
       ].filter(Boolean);
-      const hermesMessages = [...hermesSystemMessages, ...messages];
+      const hermesInstructions = buildHermesInstructions(hermesSystemMessages);
 
       const upstreamAbortController = new AbortController();
       let responseEnded = false;
-      request.on("close", () => {
+      let activeHermesRunId = "";
+      const abortActiveRun = () => {
         if (!responseEnded) {
           upstreamAbortController.abort();
+          if (activeHermesRunId) {
+            void stopHermesRun(activeHermesRunId);
+          }
         }
-      });
-      const upstreamResponse = await fetch(`${getHermesApiBaseUrl(options)}/chat/completions`, {
+      };
+      request.on("close", abortActiveRun);
+      response.on("close", abortActiveRun);
+      const startResponse = await fetch(`${getHermesApiBaseUrl(options)}/runs`, {
         method: "POST",
         signal: upstreamAbortController.signal,
         headers: {
           Authorization: `Bearer ${options.hermesApiKey}`,
           "Content-Type": "application/json",
-          "X-Hermes-Session-Id": `chisatalk-conversation-${conversationId}`,
           "X-Hermes-Session-Key": `chisatalk-user-${user.id}`,
         },
         body: JSON.stringify({
           model: typeof model.model === "string" ? model.model : modelId,
-          messages: hermesMessages,
+          input: content,
+          conversation_history: toHermesRunHistory(historyMessages),
+          instructions: hermesInstructions,
+          session_id: `chisatalk-conversation-${conversationId}`,
           ...(isRecord(model.defaultParameters) ? model.defaultParameters : {}),
-          stream: true,
         }),
       });
 
-      if (!upstreamResponse.ok) {
+      if (!startResponse.ok) {
         writeSse(response, "error", {
           code: "hermes_request_failed",
           message: "Hermes Agent 调用失败",
@@ -1144,10 +1589,42 @@ export async function createChisaTalkServer(options) {
         return;
       }
 
+      const startPayload = await readJsonResponse(startResponse);
+      const runId = getHermesRunId(startPayload);
+      if (!runId) {
+        writeSse(response, "error", {
+          code: "hermes_run_start_failed",
+          message: "Hermes Agent 没有返回 run_id",
+          requestId: id,
+        });
+        response.end();
+        return;
+      }
+      activeHermesRunId = runId;
+
+      const upstreamResponse = await fetch(`${getHermesApiBaseUrl(options)}/runs/${encodeURIComponent(runId)}/events`, {
+        method: "GET",
+        signal: upstreamAbortController.signal,
+        headers: {
+          Authorization: `Bearer ${options.hermesApiKey}`,
+          "X-Hermes-Session-Key": `chisatalk-user-${user.id}`,
+        },
+      });
+
+      if (!upstreamResponse.ok) {
+        writeSse(response, "error", {
+          code: "hermes_events_failed",
+          message: "Hermes Agent 事件流调用失败",
+          requestId: id,
+        });
+        response.end();
+        return;
+      }
+
       let assistantContent = "";
-      let reasoningContent = "";
-      let upstreamId = null;
       const toolProgress = [];
+      let pendingApproval = null;
+      let completed = false;
 
       for await (const upstreamEvent of readSseEvents(upstreamResponse.body)) {
         if (upstreamEvent.data === "[DONE]") {
@@ -1162,35 +1639,80 @@ export async function createChisaTalkServer(options) {
           continue;
         }
 
-        if (upstreamEvent.event === "hermes.tool.progress") {
-          const progress = isRecord(payload) ? payload : { message: upstreamEvent.data };
+        const eventName = getHermesRunEventName(payload, upstreamEvent.event);
+        if (eventName === "approval.request") {
+          pendingApproval = {
+            runId,
+            event: payload,
+          };
+          rememberHermesApproval(conversationId, pendingApproval);
+          const progress = getHermesToolProgress(payload, eventName);
           toolProgress.push(progress);
           writeSse(response, "tool_progress", progress);
           continue;
         }
 
-        if (isRecord(payload) && typeof payload.id === "string" && upstreamId === null) {
-          upstreamId = payload.id;
+        if (eventName === "approval.responded") {
+          clearHermesApproval(conversationId, runId);
+          const progress = getHermesToolProgress(payload, eventName);
+          toolProgress.push(progress);
+          writeSse(response, "tool_progress", progress);
+          continue;
         }
-        const delta = getAssistantDelta(payload);
+
+        if (eventName.startsWith("tool.") || eventName === "hermes.tool.progress") {
+          const progress = getHermesToolProgress(payload, eventName);
+          toolProgress.push(progress);
+          writeSse(response, "tool_progress", progress);
+          continue;
+        }
+
+        if (eventName === "run.completed") {
+          completed = true;
+          clearHermesApproval(conversationId, runId);
+          if (assistantContent.length === 0) {
+            const output = getHermesRunOutput(payload);
+            if (output.length > 0) {
+              assistantContent = output;
+              writeSse(response, "assistant_delta", { delta: output });
+            }
+          }
+          continue;
+        }
+
+        if (eventName === "run.failed" || eventName === "run.cancelled") {
+          writeSse(response, "error", {
+            code: eventName === "run.cancelled" ? "hermes_run_cancelled" : "hermes_run_failed",
+            message:
+              isRecord(payload) && typeof payload.error === "string"
+                ? payload.error
+                : "Hermes Agent 执行失败",
+            requestId: id,
+          });
+          response.end();
+          return;
+        }
+
+        const delta = eventName === "message.delta" ? getHermesRunDelta(payload) : getAssistantDelta(payload);
         if (delta.length > 0) {
           assistantContent += delta;
           writeSse(response, "assistant_delta", { delta });
         }
-        const reasoningDelta = getAssistantReasoningDelta(payload);
-        if (reasoningDelta.length > 0) {
-          reasoningContent += reasoningDelta;
-        }
       }
 
       if (assistantContent.length === 0) {
-        writeSse(response, "error", {
-          code: "empty_hermes_response",
-          message: "Hermes Agent 没有返回内容",
-          requestId: id,
-        });
-        response.end();
-        return;
+        if (pendingApproval) {
+          assistantContent = "命令正在等待安全审核通过。你可以发送“批准”或“拒绝”来处理。";
+          writeSse(response, "assistant_delta", { delta: assistantContent });
+        } else {
+          writeSse(response, "error", {
+            code: "empty_hermes_response",
+            message: "Hermes Agent 没有返回内容",
+            requestId: id,
+          });
+          response.end();
+          return;
+        }
       }
 
       const assistantResult = await insertMessage(db, databasePath, conversationId, {
@@ -1200,8 +1722,15 @@ export async function createChisaTalkServer(options) {
         clientMessageId: `server_${randomUUID()}`,
         providerMeta: {
           source: "hermes-agent",
-          upstreamId,
-          ...(reasoningContent.trim().length > 0 ? { reasoningContent: reasoningContent.trim() } : {}),
+          hermesRunId: runId,
+          ...(pendingApproval && !completed
+            ? {
+                pendingApproval: {
+                  runId,
+                  event: pendingApproval.event,
+                },
+              }
+            : {}),
           toolProgress,
         },
       });
@@ -1213,10 +1742,10 @@ export async function createChisaTalkServer(options) {
       responseEnded = true;
       response.end();
     } catch (error) {
-      console.error("[ChisaTalkServer] Hermes stream failed", error);
       if (error?.name === "AbortError") {
         return;
       }
+      console.error("[ChisaTalkServer] Hermes stream failed", error);
       writeSse(response, "error", {
         code: typeof error.code === "string" ? error.code : "hermes_stream_failed",
         message: error instanceof Error ? error.message : "Hermes Agent 调用失败",

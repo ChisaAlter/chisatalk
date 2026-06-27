@@ -18,7 +18,7 @@ describe("message-reasoning", () => {
           { toolName: "web_search", status: "done" },
         ],
       }),
-    ).toBe("检索记忆\nweb_search：done");
+    ).toBe("检索记忆\n联网搜索：已完成");
   });
 
   it("summarizes Hermes progress events that use title and state fields", () => {
@@ -29,7 +29,21 @@ describe("message-reasoning", () => {
           { name: "memory", phase: "done" },
         ],
       }),
-    ).toBe("联网搜索：running\nmemory：done");
+    ).toBe("联网搜索：进行中\n检索记忆：已完成");
+  });
+
+  it("summarizes pending approval as a readable confirmation prompt", () => {
+    expect(
+      readMessageReasoning({
+        toolProgress: [
+          {
+            event: "approval.request",
+            tool: "terminal",
+            description: "git clone operation",
+          },
+        ],
+      }),
+    ).toBe("等待你确认：git clone operation");
   });
 
   it("returns null when no displayable reasoning exists", () => {

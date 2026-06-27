@@ -5,6 +5,7 @@ import {
   getChatComposerState,
   getLatestUserMessageId,
   getMessageActionState,
+  getPendingHermesApprovalActionState,
   getReasoningDisclosureState,
   getSendButtonAccessibilityState,
 } from "./chat-interaction";
@@ -44,7 +45,7 @@ describe("getChatComposerState", () => {
     ).toEqual({ canSend: true, editable: true });
   });
 
-  it("keeps the composer usable while a previous answer is still streaming", () => {
+  it("keeps the composer editable but prevents starting a second send while streaming", () => {
     expect(
       getChatComposerState({
         draft: "换一个问题",
@@ -52,7 +53,7 @@ describe("getChatComposerState", () => {
         isLoadingConversation: false,
         isSending: true,
       }),
-    ).toEqual({ canSend: true, editable: true });
+    ).toEqual({ canSend: false, editable: true });
   });
 });
 
@@ -63,15 +64,48 @@ describe("getSendButtonAccessibilityState", () => {
     });
   });
 
-  it("does not set busy while sending because Android can keep the announcement stuck", () => {
+  it("keeps the button enabled while sending so it can act as stop", () => {
     expect(getSendButtonAccessibilityState({ canSend: false, isSending: true })).toEqual({
-      disabled: true,
+      disabled: false,
     });
   });
 });
 
+describe("getPendingHermesApprovalActionState", () => {
+  it("enables approval controls only for pending Hermes approval messages", () => {
+    expect(
+      getPendingHermesApprovalActionState({
+        providerMeta: {
+          source: "hermes-agent",
+          pendingApproval: { runId: "run-1" },
+        },
+        isSending: false,
+      }),
+    ).toEqual({ canRespond: true });
+
+    expect(
+      getPendingHermesApprovalActionState({
+        providerMeta: { source: "hermes-agent" },
+        isSending: false,
+      }),
+    ).toEqual({ canRespond: false });
+  });
+
+  it("disables approval controls while another request is in flight", () => {
+    expect(
+      getPendingHermesApprovalActionState({
+        providerMeta: {
+          source: "hermes-agent",
+          pendingApproval: { runId: "run-1" },
+        },
+        isSending: true,
+      }),
+    ).toEqual({ canRespond: false });
+  });
+});
+
 describe("getReasoningDisclosureState", () => {
-  it("collapses completed reasoning to a single preview line by default", () => {
+  it("shows a readable multi-line reasoning preview by default", () => {
     expect(
       getReasoningDisclosureState({
         messageId: "message-1",
@@ -80,7 +114,7 @@ describe("getReasoningDisclosureState", () => {
     ).toEqual({
       isExpanded: false,
       actionText: "展开",
-      numberOfLines: 1,
+      numberOfLines: 4,
     });
   });
 

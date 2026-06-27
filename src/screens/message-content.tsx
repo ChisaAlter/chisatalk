@@ -1,7 +1,7 @@
-import { Image, Text, View } from "react-native";
+import { Image, ScrollView, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import {
-  formatTableRowsForDisplay,
+  formatTableGridForDisplay,
   parseMessageContent,
   type MessageContentToken,
 } from "./message-content-parser";
@@ -85,27 +85,40 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 20,
   },
   table: {
-    gap: theme.spacing[2],
+    maxWidth: "100%",
   },
-  tableRow: {
+  tableGrid: {
+    minWidth: 280,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderStrong,
     borderRadius: theme.borderRadius.lg,
     backgroundColor: theme.colors.surface1,
     overflow: "hidden",
   },
+  tableRow: {
+    flexDirection: "row",
+  },
+  tableHeaderRow: {
+    backgroundColor: theme.colors.surface2,
+  },
   tableCell: {
+    width: 112,
+    minHeight: 38,
+    borderRightWidth: theme.borderWidth[1],
     borderBottomWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[2],
-    gap: theme.spacing[1],
+    justifyContent: "center",
   },
-  tableCellLast: {
+  tableCellLastColumn: {
+    borderRightWidth: 0,
+  },
+  tableCellLastRow: {
     borderBottomWidth: 0,
   },
   tableHeaderText: {
-    color: theme.colors.foregroundMuted,
+    color: theme.colors.foreground,
     fontSize: theme.fontSize.xs,
     lineHeight: 18,
     fontWeight: theme.fontWeight.bold,
@@ -182,24 +195,42 @@ function InlineText({ text, style }: { text: string; style: object }) {
 }
 
 function renderTable(token: Extract<MessageContentToken, { type: "table" }>, index: number) {
-  const displayRows = formatTableRowsForDisplay(token);
+  const { headers, rows } = formatTableGridForDisplay(token);
 
   return (
-    <View key={index} style={styles.table}>
-      {displayRows.map((row, rowIndex) => (
-        <View key={`row-${rowIndex}`} style={styles.tableRow}>
-          {row.cells.map((cell, cellIndex) => (
+    <ScrollView horizontal key={index} showsHorizontalScrollIndicator={false} style={styles.table}>
+      <View style={styles.tableGrid}>
+        <View style={[styles.tableRow, styles.tableHeaderRow]}>
+          {headers.map((header, cellIndex) => (
             <View
-              key={`cell-${rowIndex}-${cellIndex}`}
-              style={[styles.tableCell, cellIndex === row.cells.length - 1 ? styles.tableCellLast : null]}
+              key={`header-${cellIndex}`}
+              style={[
+                styles.tableCell,
+                cellIndex === headers.length - 1 ? styles.tableCellLastColumn : null,
+              ]}
             >
-              <Text style={styles.tableHeaderText}>{cell.header}</Text>
-              <InlineText style={styles.tableText} text={cell.value || "-"} />
+              <Text style={styles.tableHeaderText}>{header}</Text>
             </View>
           ))}
         </View>
-      ))}
-    </View>
+        {rows.map((row, rowIndex) => (
+          <View key={`row-${rowIndex}`} style={styles.tableRow}>
+            {row.map((cell, cellIndex) => (
+              <View
+                key={`cell-${rowIndex}-${cellIndex}`}
+                style={[
+                  styles.tableCell,
+                  cellIndex === headers.length - 1 ? styles.tableCellLastColumn : null,
+                  rowIndex === rows.length - 1 ? styles.tableCellLastRow : null,
+                ]}
+              >
+                <InlineText style={styles.tableText} text={cell || "-"} />
+              </View>
+            ))}
+          </View>
+        ))}
+      </View>
+    </ScrollView>
   );
 }
 

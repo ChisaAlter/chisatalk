@@ -13,9 +13,15 @@ let hermesBaseUrl;
 let closeHermesServer;
 let hermesRequests = [];
 let hermesMode = "success";
+let hermesRunCounter = 0;
+let hermesPendingEventResponses = new Map();
+let hermesApprovedRuns = new Set();
 let providerBaseUrl;
 let closeProviderServer;
 let providerRequests = [];
+let githubApiBaseUrl;
+let closeGithubServer;
+let githubRequests = [];
 
 async function request(path, init = {}) {
   const response = await fetch(`${baseUrl}${path}`, init);
@@ -48,6 +54,78 @@ function parseSse(text) {
         data: dataLine ? JSON.parse(dataLine.slice("data: ".length)) : null,
       };
     });
+}
+
+async function readStreamUntil(response, predicate) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      return { text, reader, done: true };
+    }
+    text += decoder.decode(value, { stream: true });
+    if (predicate(text)) {
+      return { text, reader, done: false };
+    }
+  }
+}
+
+async function readRemainingStream(reader, initialText) {
+  const decoder = new TextDecoder();
+  let text = initialText;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      return text + decoder.decode();
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+}
+
+async function waitFor(predicate, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(predicate(), true);
+}
+
+async function withTimeout(promise, label, timeoutMs = 1000) {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function closePendingRunResponse(runId, event) {
+  const eventResponse = hermesPendingEventResponses.get(runId);
+  if (!eventResponse || eventResponse.destroyed || eventResponse.writableEnded) {
+    return;
+  }
+  eventResponse.end("data: " + JSON.stringify(event) + "\n\n");
+  hermesPendingEventResponses.delete(runId);
+}
+
+function writeRunEvent(response, event) {
+  response.write("data: " + JSON.stringify(event) + "\n\n");
+}
+
+function closeAllPendingRunResponses(event) {
+  for (const runId of [...hermesPendingEventResponses.keys()]) {
+    closePendingRunResponse(runId, { ...event, run_id: runId });
+  }
 }
 
 before(async () => {
@@ -98,9 +176,49 @@ before(async () => {
     });
   };
 
+  const githubServer = createServer(async (request, response) => {
+    githubRequests.push({
+      url: request.url,
+      method: request.method,
+      headers: request.headers,
+    });
+    if (request.url === "/repos/ChisaAlter/chisatalk") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          full_name: "ChisaAlter/chisatalk",
+          html_url: "https://github.com/ChisaAlter/chisatalk",
+          private: false,
+          archived: false,
+          pushed_at: "2026-06-20T10:29:45Z",
+        }),
+      );
+      return;
+    }
+    response.writeHead(404, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ message: "Not Found" }));
+  });
+  await new Promise((resolve) => githubServer.listen(0, "127.0.0.1", resolve));
+  const githubAddress = githubServer.address();
+  assert.equal(typeof githubAddress, "object");
+  assert.notEqual(githubAddress, null);
+  githubApiBaseUrl = `http://127.0.0.1:${githubAddress.port}`;
+  closeGithubServer = async () => {
+    await new Promise((resolve, reject) => {
+      githubServer.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  };
+
   const hermesPresetPath = join(workspace, "hermes-preset.md");
   await writeFile(hermesPresetPath, "默认叙事预设：保持沉浸式连续世界。");
   const hermesServer = createServer(async (request, response) => {
+    const url = new URL(request.url, "http://127.0.0.1");
     const chunks = [];
     for await (const chunk of request) {
       chunks.push(chunk);
@@ -116,6 +234,168 @@ before(async () => {
     if (hermesMode === "failure") {
       response.writeHead(502, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ error: { message: "Hermes unavailable" } }));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/runs") {
+      hermesRunCounter += 1;
+      const runId = hermesMode === "approval" ? "run-approval-1" : `run-success-${hermesRunCounter}`;
+      response.writeHead(202, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ run_id: runId, status: "started" }));
+      return;
+    }
+
+    const eventsMatch = url.pathname.match(/^\/v1\/runs\/([^/]+)\/events$/);
+    if (request.method === "GET" && eventsMatch) {
+      const runId = eventsMatch[1];
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      if (hermesMode === "long-running") {
+        writeRunEvent(response, {
+          event: "message.delta",
+          run_id: runId,
+          delta: "处理中",
+        });
+        hermesPendingEventResponses.set(runId, response);
+        return;
+      }
+      if (hermesMode === "approval") {
+        if (hermesApprovedRuns.has(runId)) {
+          response.write(
+            "data: " +
+              JSON.stringify({
+                event: "approval.responded",
+                run_id: runId,
+                choice: "once",
+                resolved: 1,
+              }) +
+              "\n\n",
+          );
+          response.write(
+            "data: " +
+              JSON.stringify({
+                event: "message.delta",
+                run_id: runId,
+                delta: "已继续安装。",
+              }) +
+              "\n\n",
+          );
+          response.end(
+            "data: " +
+              JSON.stringify({
+                event: "run.completed",
+                run_id: runId,
+                output: "已继续安装。",
+              }) +
+              "\n\n",
+          );
+          return;
+        }
+        response.write(
+          "data: " +
+            JSON.stringify({
+              event: "approval.request",
+              run_id: runId,
+              tool: "execute_code",
+              command: "git clone https://github.com/HERMESquant/oh-my-hermes",
+              description: "git clone operation",
+            }) +
+            "\n\n",
+        );
+        hermesPendingEventResponses.set(runId, response);
+        return;
+      }
+      response.write(
+        "data: " +
+          JSON.stringify({
+            event: "message.delta",
+            run_id: runId,
+            delta: "你好",
+          }) +
+          "\n\n",
+      );
+      response.write(
+        "data: " +
+          JSON.stringify({
+            event: "tool.started",
+            run_id: runId,
+            tool: "memory",
+            status: "running",
+            message: "检索记忆",
+          }) +
+          "\n\n",
+      );
+      response.write(
+        "data: " +
+          JSON.stringify({
+            event: "message.delta",
+            run_id: runId,
+            delta: "，我是 Hermes。",
+          }) +
+          "\n\n",
+      );
+      response.end(
+        "data: " +
+          JSON.stringify({
+            event: "run.completed",
+            run_id: runId,
+            output: "你好，我是 Hermes。",
+            usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+          }) +
+          "\n\n",
+      );
+      return;
+    }
+
+    const approvalMatch = url.pathname.match(/^\/v1\/runs\/([^/]+)\/approval$/);
+    if (request.method === "POST" && approvalMatch) {
+      const runId = approvalMatch[1];
+      hermesApprovedRuns.add(runId);
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ run_id: runId, choice: "once", resolved: 1 }));
+      const eventResponse = hermesPendingEventResponses.get(runId);
+      if (eventResponse && !eventResponse.destroyed && !eventResponse.writableEnded) {
+        eventResponse.write(
+          "data: " +
+            JSON.stringify({
+              event: "approval.responded",
+              run_id: runId,
+              choice: "once",
+              resolved: 1,
+            }) +
+            "\n\n",
+        );
+        eventResponse.write(
+          "data: " +
+            JSON.stringify({
+              event: "message.delta",
+              run_id: runId,
+              delta: "已继续安装。",
+            }) +
+            "\n\n",
+        );
+        eventResponse.end(
+          "data: " +
+            JSON.stringify({
+              event: "run.completed",
+              run_id: runId,
+              output: "已继续安装。",
+            }) +
+            "\n\n",
+        );
+        hermesPendingEventResponses.delete(runId);
+      }
+      return;
+    }
+
+    const stopMatch = url.pathname.match(/^\/v1\/runs\/([^/]+)\/stop$/);
+    if (request.method === "POST" && stopMatch) {
+      const runId = stopMatch[1];
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ run_id: runId, status: "stopping" }));
+      closePendingRunResponse(runId, {
+        event: "run.cancelled",
+        run_id: runId,
+      });
       return;
     }
 
@@ -209,6 +489,7 @@ before(async () => {
     hermesApiBaseUrl: hermesBaseUrl,
     hermesApiKey: "hermes-secret",
     hermesPresetPath,
+    githubApiBaseUrl,
     users: [{ username: "other", password: "other-secret", displayName: "Other" }],
   });
   const server = app.listen(0);
@@ -235,6 +516,7 @@ after(async () => {
   await closeServer();
   await closeHermesServer();
   await closeProviderServer();
+  await closeGithubServer();
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -563,33 +845,32 @@ describe("chisatalk server", () => {
     assert.equal(events[3].data.delta, "，我是 Hermes。");
     assert.equal(events[4].data.message.content, "你好，我是 Hermes。");
 
-    assert.equal(hermesRequests.length, 1);
-    assert.equal(hermesRequests[0].url, "/v1/chat/completions");
-    assert.equal(hermesRequests[0].headers.authorization, "Bearer hermes-secret");
+    const runRequest = hermesRequests.find((request) => request.url === "/v1/runs");
+    assert.equal(runRequest?.headers.authorization, "Bearer hermes-secret");
     assert.equal(
-      hermesRequests[0].headers["x-hermes-session-id"],
+      runRequest?.body.session_id,
       `chisatalk-conversation-${created.payload.conversation.id}`,
     );
-    assert.equal(hermesRequests[0].headers["x-hermes-session-key"], "chisatalk-user-admin");
-    assert.equal(hermesRequests[0].body.stream, true);
-    assert.equal(hermesRequests[0].body.messages[0].role, "system");
-    assert.equal(hermesRequests[0].body.messages[0].content, "默认叙事预设：保持沉浸式连续世界。");
-    assert.equal(hermesRequests[0].body.messages[1].content, "你是 ChisaTalk。");
+    assert.equal(runRequest?.headers["x-hermes-session-key"], "chisatalk-user-admin");
+    assert.equal(runRequest?.body.input, "你好");
+    assert.equal(runRequest?.body.instructions.includes("默认叙事预设：保持沉浸式连续世界。"), true);
+    assert.equal(runRequest?.body.instructions.includes("你是 ChisaTalk。"), true);
     assert.equal(
-      hermesRequests[0].body.messages.some((message) => {
-        return message.role === "system" && message.content.includes("联网搜索") && message.content.includes("已同意");
-      }),
+      runRequest?.body.instructions.includes("联网搜索") &&
+        runRequest?.body.instructions.includes("已同意"),
       true,
     );
     assert.equal(
-      hermesRequests[0].body.messages.some((message) => {
-        return (
-          message.role === "system" &&
-          message.content.includes("天气") &&
-          message.content.includes("明天") &&
-          message.content.includes("必须先联网搜索")
-        );
-      }),
+      runRequest?.body.instructions.includes("天气") &&
+        runRequest?.body.instructions.includes("明天") &&
+        runRequest?.body.instructions.includes("必须先联网搜索"),
+      true,
+    );
+    assert.equal(
+      runRequest?.body.instructions.includes("GitHub") &&
+        runRequest?.body.instructions.includes("仓库") &&
+        runRequest?.body.instructions.includes("web_search") &&
+        runRequest?.body.instructions.includes("不要改用 execute_code"),
       true,
     );
 
@@ -600,7 +881,181 @@ describe("chisatalk server", () => {
     assert.equal(detail.payload.messages[0].role, "user");
     assert.equal(detail.payload.messages[1].role, "assistant");
     assert.equal(detail.payload.messages[1].content, "你好，我是 Hermes。");
-    assert.equal(detail.payload.messages[1].providerMeta.reasoningContent, "先检索记忆。");
+    assert.equal(detail.payload.messages[1].providerMeta.hermesRunId.startsWith("run-success-"), true);
+  });
+
+  it("routes mobile approval text to the active Hermes run approval endpoint", async () => {
+    hermesRequests = [];
+    hermesPendingEventResponses = new Map();
+    hermesApprovedRuns = new Set();
+    hermesMode = "approval";
+    const loggedIn = await login("admin", "secret");
+    const auth = { Authorization: `Bearer ${loggedIn.payload.accessToken}` };
+
+    const created = await request("/v1/conversations", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Hermes 审批", modelId: "hermes" }),
+    });
+
+    const firstResponse = await fetch(
+      `${baseUrl}/v1/conversations/${created.payload.conversation.id}/agent-turns/stream`,
+      {
+        method: "POST",
+        headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "请 git clone 一个仓库",
+          modelId: "hermes",
+          clientMessageId: "client-needs-approval",
+          systemPrompt: "你是 ChisaTalk。",
+        }),
+      },
+    );
+    assert.equal(firstResponse.status, 200);
+    const partial = await readStreamUntil(firstResponse, (text) => text.includes("tool_progress"));
+    assert.equal(partial.done, false);
+    assert.equal(partial.text.includes("approval.request"), true);
+
+    const approvalResponse = await request(
+      `/v1/conversations/${created.payload.conversation.id}/agent-turns/stream`,
+      {
+        method: "POST",
+        headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "批准",
+          modelId: "hermes",
+          clientMessageId: "client-approval",
+          systemPrompt: "你是 ChisaTalk。",
+        }),
+      },
+    );
+
+    assert.equal(approvalResponse.response.status, 200);
+    const approvalEvents = parseSse(approvalResponse.text);
+    assert.equal(approvalEvents.some((event) => event.event === "approval_response"), true);
+
+    const firstText = await readRemainingStream(partial.reader, partial.text);
+    const firstEvents = parseSse(firstText);
+    assert.equal(firstEvents.some((event) => event.event === "assistant_message"), true);
+    assert.equal(firstEvents.find((event) => event.event === "assistant_message").data.message.content, "已继续安装。");
+
+    const approvalRequest = hermesRequests.find((request) => request.url === "/v1/runs/run-approval-1/approval");
+    assert.equal(approvalRequest?.method, "POST");
+    assert.deepEqual(approvalRequest?.body, { choice: "once" });
+
+    const detail = await request(`/v1/conversations/${created.payload.conversation.id}`, {
+      headers: auth,
+    });
+    assert.equal(
+      detail.payload.messages.some((message) => message.role === "user" && message.content === "批准"),
+      true,
+    );
+    assert.equal(
+      detail.payload.messages.some((message) => message.role === "assistant" && message.content === "已继续安装。"),
+      true,
+    );
+  });
+
+  it("streams the approved Hermes run continuation when the original waiting stream was closed", async () => {
+    hermesRequests = [];
+    hermesPendingEventResponses = new Map();
+    hermesApprovedRuns = new Set();
+    hermesMode = "approval";
+    const loggedIn = await login("admin", "secret");
+    const auth = { Authorization: `Bearer ${loggedIn.payload.accessToken}` };
+
+    const created = await request("/v1/conversations", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Hermes 审批重连", modelId: "hermes" }),
+    });
+
+    const controller = new AbortController();
+    const firstResponse = await fetch(
+      `${baseUrl}/v1/conversations/${created.payload.conversation.id}/agent-turns/stream`,
+      {
+        method: "POST",
+        signal: controller.signal,
+        headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "请 git clone 一个仓库",
+          modelId: "hermes",
+          clientMessageId: "client-needs-approval-reconnect",
+          systemPrompt: "你是 ChisaTalk。",
+        }),
+      },
+    );
+    assert.equal(firstResponse.status, 200);
+    const partial = await readStreamUntil(firstResponse, (text) => text.includes("approval.request"));
+    assert.equal(partial.done, false);
+    await withTimeout(partial.reader.cancel(), "approval stream cancel");
+
+    const approvalResponse = await request(
+      `/v1/conversations/${created.payload.conversation.id}/agent-turns/stream`,
+      {
+        method: "POST",
+        headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "批准",
+          modelId: "hermes",
+          clientMessageId: "client-approval-reconnect",
+          systemPrompt: "你是 ChisaTalk。",
+        }),
+      },
+    );
+
+    assert.equal(approvalResponse.response.status, 200);
+    const approvalEvents = parseSse(approvalResponse.text);
+    assert.equal(approvalEvents.some((event) => event.event === "approval_response"), true);
+    const assistantMessage = approvalEvents.find((event) => event.event === "assistant_message");
+    assert.equal(assistantMessage?.data.message.content, "已继续安装。");
+
+    const approvalRequest = hermesRequests.find((request) => request.url === "/v1/runs/run-approval-1/approval");
+    assert.equal(approvalRequest?.method, "POST");
+    assert.deepEqual(approvalRequest?.body, { choice: "once" });
+  });
+
+  it("stops the active Hermes run when the mobile stream is cancelled", async () => {
+    hermesRequests = [];
+    hermesPendingEventResponses = new Map();
+    hermesMode = "long-running";
+    const loggedIn = await login("admin", "secret");
+    const auth = { Authorization: `Bearer ${loggedIn.payload.accessToken}` };
+
+    const created = await request("/v1/conversations", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Hermes 停止", modelId: "hermes" }),
+    });
+
+    const controller = new AbortController();
+    const firstResponse = await withTimeout(
+      fetch(
+        `${baseUrl}/v1/conversations/${created.payload.conversation.id}/agent-turns/stream`,
+        {
+          method: "POST",
+          signal: controller.signal,
+          headers: { ...auth, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content: "请持续思考",
+            modelId: "hermes",
+            clientMessageId: "client-stop-run",
+            systemPrompt: "你是 ChisaTalk。",
+          }),
+        },
+      ),
+      "mobile stream fetch",
+    );
+    assert.equal(firstResponse.status, 200);
+    await waitFor(() => hermesRequests.some((request) => /\/v1\/runs\/run-success-\d+\/events/.test(request.url)));
+    controller.abort();
+    setTimeout(() => {
+      closeAllPendingRunResponses({ event: "run.cancelled" });
+    }, 200);
+
+    await waitFor(() => hermesRequests.some((request) => /\/v1\/runs\/run-success-\d+\/stop/.test(request.url)));
+    const stopRequest = hermesRequests.find((request) => /\/v1\/runs\/run-success-\d+\/stop/.test(request.url));
+    assert.equal(stopRequest?.method, "POST");
   });
 
   it("streams an error and does not persist an empty assistant message when Hermes fails", async () => {
@@ -636,5 +1091,43 @@ describe("chisatalk server", () => {
     });
     assert.equal(detail.payload.messages.length, 1);
     assert.equal(detail.payload.messages[0].role, "user");
+  });
+
+  it("injects exact GitHub repository lookup results into Hermes turns", async () => {
+    hermesRequests = [];
+    githubRequests = [];
+    hermesMode = "success";
+    const loggedIn = await login("admin", "secret");
+    const auth = { Authorization: `Bearer ${loggedIn.payload.accessToken}` };
+
+    const created = await request("/v1/conversations", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "GitHub 仓库查询", modelId: "hermes" }),
+    });
+
+    const streamed = await request(`/v1/conversations/${created.payload.conversation.id}/agent-turns/stream`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "请搜索 GitHub 仓库 ChisaAlter/chisatalk 是否存在",
+        modelId: "hermes",
+        clientMessageId: "client-github-lookup",
+      }),
+    });
+
+    assert.equal(streamed.response.status, 200);
+    assert.deepEqual(
+      githubRequests.map((request) => request.url),
+      ["/repos/ChisaAlter/chisatalk"],
+    );
+    const runRequest = hermesRequests.find((request) => request.url === "/v1/runs");
+    assert.equal(
+      runRequest?.body.instructions.includes("GitHub 精确仓库查询结果") &&
+        runRequest?.body.instructions.includes("ChisaAlter/chisatalk") &&
+        runRequest?.body.instructions.includes("https://github.com/ChisaAlter/chisatalk") &&
+        runRequest?.body.instructions.includes("存在"),
+      true,
+    );
   });
 });

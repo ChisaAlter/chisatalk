@@ -16,7 +16,7 @@ import {
   View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { ImagePlus, LogOut, Menu, Plus, RefreshCw, Send, Settings, X } from "lucide-react-native";
+import { ImagePlus, LogOut, Menu, Plus, RefreshCw, Send, Settings, Square, X } from "lucide-react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { AnimatedPressable } from "@/components/animated-pressable";
@@ -27,6 +27,7 @@ import {
   getLatestUserMessageId,
   getMessageRoleLabel,
   getMessageActionState,
+  getPendingHermesApprovalActionState,
   getReasoningDisclosureState,
   getSendButtonAccessibilityState,
 } from "./chat-interaction";
@@ -67,6 +68,7 @@ interface ChatScreenProps {
   onClearImage: () => void;
   onSaveAssistantProfile: (profile: AssistantProfile) => Promise<void>;
   onSendMessage: (content: string, attachments: ChisaTalkImageAttachment[]) => Promise<void>;
+  onStopSending: () => void;
   onEditLastUserMessage: (messageId: string, content: string) => Promise<void>;
 }
 
@@ -336,6 +338,16 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing[3],
     paddingBottom: theme.spacing[4],
     gap: theme.spacing[3],
+    width: "100%",
+  },
+  messageRow: {
+    width: "100%",
+  },
+  userMessageRow: {
+    alignItems: "flex-end",
+  },
+  assistantMessageRow: {
+    alignItems: "flex-start",
   },
   messageBubble: {
     maxWidth: "84%",
@@ -348,8 +360,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   userBubble: {
     alignSelf: "flex-end",
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.accentSoft,
     borderColor: theme.colors.accent,
+    borderRightWidth: theme.borderWidth[2],
     borderTopRightRadius: theme.borderRadius.lg,
   },
   assistantBubble: {
@@ -365,7 +378,7 @@ const styles = StyleSheet.create((theme) => ({
     includeFontPadding: false,
   },
   userRoleText: {
-    color: theme.colors.accentForeground,
+    color: theme.colors.foregroundMuted,
   },
   assistantRoleText: {
     color: theme.colors.foregroundMuted,
@@ -376,7 +389,7 @@ const styles = StyleSheet.create((theme) => ({
     includeFontPadding: false,
   },
   userMessageText: {
-    color: theme.colors.accentForeground,
+    color: theme.colors.foreground,
   },
   assistantMessageText: {
     color: theme.colors.foreground,
@@ -397,18 +410,18 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
   },
   reasoningTitle: {
-    color: theme.colors.foregroundSubtle,
+    color: theme.colors.foreground,
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.semibold,
     includeFontPadding: false,
   },
   reasoningMeta: {
-    color: theme.colors.foregroundSubtle,
+    color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,
     includeFontPadding: false,
   },
   reasoningBody: {
-    color: theme.colors.foregroundSubtle,
+    color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
     lineHeight: 20,
     paddingHorizontal: theme.spacing[3],
@@ -556,6 +569,40 @@ const styles = StyleSheet.create((theme) => ({
   sendButtonDisabled: {
     opacity: theme.opacity[50],
   },
+  approvalButtonRow: {
+    flexDirection: "row",
+    gap: theme.spacing[2],
+    marginTop: theme.spacing[2],
+  },
+  approvalButton: {
+    minHeight: 40,
+    minWidth: 88,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing[3],
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: theme.borderWidth[1],
+  },
+  approvalButtonPrimary: {
+    backgroundColor: theme.colors.accent,
+    borderColor: theme.colors.accent,
+  },
+  approvalButtonSecondary: {
+    backgroundColor: theme.colors.surface0,
+    borderColor: theme.colors.borderStrong,
+  },
+  approvalButtonTextPrimary: {
+    color: theme.colors.accentForeground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.bold,
+    includeFontPadding: false,
+  },
+  approvalButtonTextSecondary: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.bold,
+    includeFontPadding: false,
+  },
   composerStack: {
     marginHorizontal: 0,
     marginBottom: 0,
@@ -681,6 +728,7 @@ export function ChatScreen({
   onClearImage,
   onSaveAssistantProfile,
   onSendMessage,
+  onStopSending,
   onEditLastUserMessage,
 }: ChatScreenProps) {
   const { theme } = useUnistyles();
@@ -908,6 +956,10 @@ export function ChatScreen({
   });
 
   const handleSend = () => {
+    if (isSending) {
+      onStopSending();
+      return;
+    }
     if (!composerState.canSend) {
       return;
     }
@@ -980,83 +1032,113 @@ export function ChatScreen({
               });
               const imageAttachments = readMessageImageAttachments(message.providerMeta);
               const reasoning = !isUser ? readMessageReasoning(message.providerMeta) : null;
+              const approvalActionState = !isUser
+                ? getPendingHermesApprovalActionState({
+                    providerMeta: message.providerMeta,
+                    isSending,
+                  })
+                : { canRespond: false };
               const reasoningDisclosure = getReasoningDisclosureState({
                 messageId: message.id,
                 expandedReasoningIds,
               });
               return (
-                <AnimatedPressable
+                <View
                   key={message.id}
-                  accessibilityRole="button"
-                  onLongPress={() => openMessageActions(message)}
-                  staticMotion
-                  style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}
+                  style={[styles.messageRow, isUser ? styles.userMessageRow : styles.assistantMessageRow]}
                 >
-                  <Text style={[styles.roleText, isUser ? styles.userRoleText : styles.assistantRoleText]}>
-                    {roleLabel}
-                  </Text>
-                  {reasoning ? (
-                    <View style={styles.reasoningCard}>
-                      <AnimatedPressable
-                        accessibilityRole="button"
-                        onPress={() => toggleReasoning(message.id)}
-                        style={styles.reasoningHeader}
-                      >
-                        <Text style={styles.reasoningTitle}>思考过程</Text>
-                        <Text style={styles.reasoningMeta}>{reasoningDisclosure.actionText}</Text>
-                      </AnimatedPressable>
-                      <Text
-                        numberOfLines={reasoningDisclosure.numberOfLines}
-                        style={styles.reasoningBody}
-                      >
-                        {reasoning}
-                      </Text>
-                    </View>
-                  ) : null}
-                  {isUser ? (
-                    <Text style={[styles.messageText, styles.userMessageText]}>{message.content}</Text>
-                  ) : (
-                    <MessageContent content={message.content} />
-                  )}
-                  {imageAttachments.map((attachment, index) => (
-                    <Image
-                      key={`${message.id}-image-${index}`}
-                      source={{ uri: attachment.dataUrl }}
-                      style={styles.messageImage}
-                    />
-                  ))}
-                </AnimatedPressable>
+                  <AnimatedPressable
+                    accessibilityRole="button"
+                    onLongPress={() => openMessageActions(message)}
+                    staticMotion
+                    style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}
+                  >
+                    <Text style={[styles.roleText, isUser ? styles.userRoleText : styles.assistantRoleText]}>
+                      {roleLabel}
+                    </Text>
+                    {reasoning ? (
+                      <View style={styles.reasoningCard}>
+                        <AnimatedPressable
+                          accessibilityRole="button"
+                          onPress={() => toggleReasoning(message.id)}
+                          style={styles.reasoningHeader}
+                        >
+                          <Text style={styles.reasoningTitle}>思考过程</Text>
+                          <Text style={styles.reasoningMeta}>{reasoningDisclosure.actionText}</Text>
+                        </AnimatedPressable>
+                        <Text
+                          numberOfLines={reasoningDisclosure.numberOfLines}
+                          style={styles.reasoningBody}
+                        >
+                          {reasoning}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {isUser ? (
+                      <Text style={[styles.messageText, styles.userMessageText]}>{message.content}</Text>
+                    ) : (
+                      <MessageContent content={message.content} />
+                    )}
+                    {imageAttachments.map((attachment, index) => (
+                      <Image
+                        key={`${message.id}-image-${index}`}
+                        source={{ uri: attachment.dataUrl }}
+                        style={styles.messageImage}
+                      />
+                    ))}
+                    {approvalActionState.canRespond ? (
+                      <View style={styles.approvalButtonRow}>
+                        <AnimatedPressable
+                          accessibilityRole="button"
+                          onPress={() => void onSendMessage("批准", [])}
+                          style={[styles.approvalButton, styles.approvalButtonPrimary]}
+                        >
+                          <Text style={styles.approvalButtonTextPrimary}>批准</Text>
+                        </AnimatedPressable>
+                        <AnimatedPressable
+                          accessibilityRole="button"
+                          onPress={() => void onSendMessage("拒绝", [])}
+                          style={[styles.approvalButton, styles.approvalButtonSecondary]}
+                        >
+                          <Text style={styles.approvalButtonTextSecondary}>拒绝</Text>
+                        </AnimatedPressable>
+                      </View>
+                    ) : null}
+                  </AnimatedPressable>
+                </View>
               );
             })}
             {isSending ? (
-              <View style={[styles.messageBubble, styles.assistantBubble]}>
-                <Text style={[styles.roleText, styles.assistantRoleText]}>{assistantRoleLabel}</Text>
-                <View style={styles.reasoningCard}>
-                  <View style={styles.reasoningHeader}>
-                    <Text style={styles.reasoningTitle}>{agentProgressText ? "Hermes Agent" : "思考中"}</Text>
-                    <Text style={styles.reasoningMeta}>
-                      {streamingAssistantContent.trim().length > 0 ? "流式回复中" : "等待模型返回"}
+              <View style={[styles.messageRow, styles.assistantMessageRow]}>
+                <View style={[styles.messageBubble, styles.assistantBubble]}>
+                  <Text style={[styles.roleText, styles.assistantRoleText]}>{assistantRoleLabel}</Text>
+                  <View style={styles.reasoningCard}>
+                    <View style={styles.reasoningHeader}>
+                      <Text style={styles.reasoningTitle}>{agentProgressText ? "Hermes Agent" : "思考中"}</Text>
+                      <Text style={styles.reasoningMeta}>
+                        {streamingAssistantContent.trim().length > 0 ? "流式回复中" : "等待模型返回"}
+                      </Text>
+                    </View>
+                    <Text style={styles.reasoningBody}>
+                      {agentProgressText ?? "正在组织上下文、图片和历史消息。"}
                     </Text>
                   </View>
-                  <Text style={styles.reasoningBody}>
-                    {agentProgressText ?? "正在组织上下文、图片和历史消息。"}
-                  </Text>
+                  {streamingAssistantContent.trim().length > 0 ? (
+                    <MessageContent content={streamingAssistantContent} />
+                  ) : (
+                    <>
+                      <Text style={styles.thinkingText}>正在生成回复</Text>
+                      <View style={styles.thinkingDots}>
+                        {[0, 1, 2].map((index) => (
+                          <View
+                            key={index}
+                            style={[styles.thinkingDot, thinkingFrame === index ? styles.thinkingDotActive : null]}
+                          />
+                        ))}
+                      </View>
+                    </>
+                  )}
                 </View>
-                {streamingAssistantContent.trim().length > 0 ? (
-                  <MessageContent content={streamingAssistantContent} />
-                ) : (
-                  <>
-                    <Text style={styles.thinkingText}>正在生成回复</Text>
-                    <View style={styles.thinkingDots}>
-                      {[0, 1, 2].map((index) => (
-                        <View
-                          key={index}
-                          style={[styles.thinkingDot, thinkingFrame === index ? styles.thinkingDotActive : null]}
-                        />
-                      ))}
-                    </View>
-                  </>
-                )}
               </View>
             ) : null}
           </ScrollView>
@@ -1113,11 +1195,15 @@ export function ChatScreen({
             <AnimatedPressable
               accessibilityRole="button"
               accessibilityState={sendButtonAccessibilityState}
-              disabled={!composerState.canSend}
+              disabled={!isSending && !composerState.canSend}
               onPress={handleSend}
-              style={[styles.sendButton, !composerState.canSend ? styles.sendButtonDisabled : null]}
+              style={[styles.sendButton, !isSending && !composerState.canSend ? styles.sendButtonDisabled : null]}
             >
-              <Send size={18} color={theme.colors.accentForeground} />
+              {isSending ? (
+                <Square size={17} color={theme.colors.accentForeground} fill={theme.colors.accentForeground} />
+              ) : (
+                <Send size={18} color={theme.colors.accentForeground} />
+              )}
             </AnimatedPressable>
           </View>
         </View>

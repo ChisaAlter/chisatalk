@@ -563,6 +563,10 @@ export default function Index() {
     ],
   );
 
+  const handleStopSending = useCallback(() => {
+    activeSendAbortRef.current?.abort();
+  }, []);
+
   const handleEditLastUserMessage = useCallback(
     async (messageId: string, content: string) => {
       await handleSendMessage(content, [], messageId);
@@ -615,6 +619,7 @@ export default function Index() {
       onClearImage={() => setPendingImage(null)}
       onSaveAssistantProfile={handleSaveAssistantProfile}
       onSendMessage={handleSendMessage}
+      onStopSending={handleStopSending}
       onEditLastUserMessage={handleEditLastUserMessage}
     />
   );

@@ -7,8 +7,9 @@ export type MessageContentToken =
   | { type: "table"; headers: string[]; rows: string[][] }
   | { type: "image"; alt: string | null; uri: string };
 
-export interface TableDisplayRow {
-  cells: { header: string; value: string }[];
+export interface TableDisplayGrid {
+  headers: string[];
+  rows: string[][];
 }
 
 const FENCE_PATTERN = /^```([\w-]+)?\s*$/;
@@ -68,20 +69,18 @@ function parseBareImageUrl(line: string): MessageContentToken | null {
   };
 }
 
-export function formatTableRowsForDisplay(
+export function formatTableGridForDisplay(
   table: Extract<MessageContentToken, { type: "table" }>,
-): TableDisplayRow[] {
+): TableDisplayGrid {
   const headers = table.headers.map((header, index) => header.trim() || `列 ${index + 1}`);
   if (headers.length === 0) {
-    return [];
+    return { headers: [], rows: [] };
   }
 
-  return table.rows.map((row) => ({
-    cells: headers.map((header, index) => ({
-      header,
-      value: row[index]?.trim() ?? "",
-    })),
-  }));
+  return {
+    headers,
+    rows: table.rows.map((row) => headers.map((_, index) => row[index]?.trim() ?? "")),
+  };
 }
 
 function isBlockBoundary(lines: string[], index: number): boolean {
