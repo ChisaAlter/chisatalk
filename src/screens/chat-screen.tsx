@@ -17,20 +17,38 @@ import {
   View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { ImagePlus, LogOut, Menu, Plus, RefreshCw, Send, Settings, Square, X } from "lucide-react-native";
+import {
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CircleX,
+  ImagePlus,
+  LogOut,
+  Menu,
+  Plus,
+  RefreshCw,
+  Send,
+  Settings,
+  Square,
+  X,
+} from "lucide-react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { AnimatedPressable } from "@/components/animated-pressable";
 import { getAssistantProfileFields } from "./assistant-profile-fields";
 import {
   formatConversationListTitle,
+  getAssistantProfileSummary,
   getChatComposerState,
+  groupConversationsByRecency,
   getLatestUserMessageId,
   getMessageRoleLabel,
   getMessageActionState,
   getPendingHermesApprovalActionState,
   getReasoningDisclosureState,
   getSendButtonAccessibilityState,
+  getWorkspaceStatusText,
 } from "./chat-interaction";
 import { MessageContent } from "./message-content";
 import {
@@ -84,42 +102,61 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface0,
   },
   topBar: {
-    minHeight: 64,
+    minHeight: 68,
     paddingHorizontal: theme.spacing[4],
     paddingTop: theme.spacing[1],
-    paddingBottom: theme.spacing[3],
+    paddingBottom: theme.spacing[2],
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[3],
+    gap: theme.spacing[2],
     backgroundColor: theme.colors.surface0,
     borderBottomWidth: theme.borderWidth[1],
     borderBottomColor: theme.colors.border,
   },
   iconButton: {
-    width: 44,
-    height: 44,
+    width: 42,
+    height: 42,
     borderRadius: theme.borderRadius.full,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderStrong,
-    backgroundColor: theme.colors.surface1,
+    borderWidth: theme.borderWidth[0],
+    backgroundColor: "transparent",
     alignItems: "center",
     justifyContent: "center",
-    ...theme.shadow.sm,
+  },
+  iconButtonFramed: {
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface1,
   },
   titleBlock: {
     flex: 1,
+    gap: 3,
+  },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: theme.spacing[1],
   },
   appName: {
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.xl,
+    fontSize: theme.fontSize.lg,
     fontWeight: theme.fontWeight.bold,
     letterSpacing: 0,
     includeFontPadding: false,
   },
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.accent,
+  },
   subText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     includeFontPadding: false,
   },
   body: {
@@ -131,13 +168,13 @@ const styles = StyleSheet.create((theme) => ({
     top: 0,
     bottom: 0,
     left: 0,
-    width: "86%",
-    maxWidth: 380,
-    backgroundColor: theme.colors.surface1,
-    paddingTop: theme.spacing[5],
+    width: "82%",
+    maxWidth: 360,
+    backgroundColor: theme.colors.surface0,
+    paddingTop: theme.spacing[6],
     paddingHorizontal: theme.spacing[4],
-    paddingBottom: theme.spacing[4],
-    gap: theme.spacing[4],
+    paddingBottom: theme.spacing[8],
+    gap: theme.spacing[5],
     ...theme.shadow.lg,
   },
   sidebarBackdrop: {
@@ -157,7 +194,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "space-between",
     gap: theme.spacing[3],
-    paddingBottom: theme.spacing[1],
   },
   sidebarBrandRow: {
     flexDirection: "row",
@@ -165,12 +201,10 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[3],
   },
   sidebarMark: {
-    width: 40,
-    height: 40,
-    borderRadius: theme.borderRadius.xl,
+    width: 48,
+    height: 48,
+    borderRadius: 14,
     backgroundColor: theme.colors.foreground,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.accent,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -181,7 +215,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   sidebarTitle: {
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.lg,
+    fontSize: theme.fontSize.xl,
     fontWeight: theme.fontWeight.bold,
     includeFontPadding: false,
   },
@@ -190,34 +224,55 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     includeFontPadding: false,
   },
+  sidebarStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    marginTop: theme.spacing[1],
+  },
+  sidebarStatusText: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+    includeFontPadding: false,
+  },
   actionStack: {
-    gap: theme.spacing[2],
+    gap: theme.spacing[3],
   },
   actionButton: {
-    minHeight: 46,
-    borderRadius: theme.borderRadius.xl,
+    minHeight: 48,
+    borderRadius: theme.borderRadius.lg,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface1,
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexDirection: "row",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[4],
+  },
+  actionButtonPrimary: {
+    borderColor: theme.colors.borderStrong,
     backgroundColor: theme.colors.surface0,
+  },
+  secondaryActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderTopWidth: theme.borderWidth[1],
+    borderTopColor: theme.colors.border,
+    paddingTop: theme.spacing[3],
+    minHeight: 56,
+    backgroundColor: theme.colors.surface0,
+  },
+  secondaryActionButton: {
+    flex: 1,
+  },
+  footerActionButton: {
+    flex: 1,
+    minHeight: 44,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
     gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[3],
-  },
-  actionButtonPrimary: {
-    borderColor: theme.colors.accent,
-    backgroundColor: theme.colors.accent,
-    minHeight: 50,
-    borderRadius: theme.borderRadius.xl,
-    ...theme.shadow.sm,
-  },
-  secondaryActionRow: {
-    flexDirection: "row",
-    gap: theme.spacing[2],
-  },
-  secondaryActionButton: {
-    flex: 1,
   },
   utilityActionButton: {
     minHeight: 44,
@@ -226,51 +281,75 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.semibold,
-    textAlign: "center",
+    textAlign: "left",
     includeFontPadding: false,
   },
   actionTextPrimary: {
-    color: theme.colors.accentForeground,
+    color: theme.colors.foreground,
+  },
+  actionTextMuted: {
+    color: theme.colors.foregroundSubtle,
+    fontSize: theme.fontSize.xs,
+    includeFontPadding: false,
+  },
+  actionLabelRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  actionTextBlock: {
+    flex: 1,
+    gap: 2,
   },
   sectionLabel: {
-    color: theme.colors.foregroundSubtle,
+    color: theme.colors.foreground,
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.semibold,
     letterSpacing: 0,
-    marginTop: theme.spacing[1],
+    marginTop: theme.spacing[2],
+    marginBottom: theme.spacing[1],
   },
   conversationScroll: {
     flex: 1,
   },
   conversationList: {
-    gap: theme.spacing[2],
     paddingBottom: theme.spacing[8],
   },
   conversationItem: {
-    borderRadius: theme.borderRadius.xl,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface0,
-    minHeight: 58,
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: "transparent",
+    minHeight: 48,
     justifyContent: "center",
-    paddingHorizontal: theme.spacing[3],
+    paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[2],
     gap: theme.spacing[1],
   },
   conversationItemActive: {
-    borderColor: theme.colors.accent,
-    backgroundColor: theme.colors.accentSoft,
-    borderLeftWidth: theme.borderWidth[2],
+    backgroundColor: theme.colors.surface1,
+  },
+  conversationMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[2],
   },
   conversationTitle: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.semibold,
+    fontWeight: theme.fontWeight.medium,
     includeFontPadding: false,
+    flex: 1,
   },
   conversationTime: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,
+    includeFontPadding: false,
+  },
+  conversationHint: {
+    color: theme.colors.foregroundSubtle,
+    fontSize: theme.fontSize.xs,
+    marginTop: theme.spacing[3],
     includeFontPadding: false,
   },
   emptySidebar: {
@@ -282,11 +361,11 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
   },
   settingsContent: {
-    gap: theme.spacing[3],
-    paddingBottom: theme.spacing[8],
+    gap: theme.spacing[2],
+    paddingBottom: theme.spacing[4],
   },
   settingsPanel: {
-    borderRadius: theme.borderRadius.xl,
+    borderRadius: theme.borderRadius.full,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderStrong,
     backgroundColor: theme.colors.surface0,
@@ -310,7 +389,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface1,
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
-    lineHeight: 20,
+    lineHeight: 22,
     paddingHorizontal: theme.spacing[3],
     paddingTop: 0,
     paddingBottom: 0,
@@ -318,7 +397,7 @@ const styles = StyleSheet.create((theme) => ({
     includeFontPadding: false,
   },
   settingsTextArea: {
-    minHeight: 84,
+    minHeight: 108,
     paddingTop: theme.spacing[3],
     paddingBottom: theme.spacing[3],
     textAlignVertical: "top",
@@ -332,6 +411,21 @@ const styles = StyleSheet.create((theme) => ({
   settingsButtonRow: {
     flexDirection: "row",
     gap: theme.spacing[2],
+    paddingTop: theme.spacing[1],
+  },
+  settingsActionButton: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: theme.borderRadius.lg,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  settingsActionButtonPrimary: {
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accent,
   },
   settingsSaveButton: {
     flex: 1,
@@ -341,9 +435,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   messagesContent: {
     paddingHorizontal: theme.spacing[4],
-    paddingTop: theme.spacing[3],
-    paddingBottom: theme.spacing[4],
-    gap: theme.spacing[3],
+    paddingTop: theme.spacing[4],
+    paddingBottom: theme.spacing[5],
+    gap: theme.spacing[4],
     width: "100%",
   },
   messageRow: {
@@ -356,27 +450,44 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "flex-start",
   },
   messageBubble: {
-    maxWidth: "84%",
+    maxWidth: "100%",
     borderRadius: 18,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
     paddingHorizontal: theme.spacing[4],
     paddingVertical: theme.spacing[3],
     gap: theme.spacing[2],
   },
   userBubble: {
     alignSelf: "flex-end",
+    maxWidth: "84%",
     backgroundColor: theme.colors.accentSoft,
-    borderColor: theme.colors.accent,
-    borderRightWidth: theme.borderWidth[2],
-    borderTopRightRadius: theme.borderRadius.lg,
+    borderTopRightRadius: theme.borderRadius.md,
   },
   assistantBubble: {
     alignSelf: "flex-start",
-    backgroundColor: theme.colors.surface1,
+    width: "100%",
+    backgroundColor: "transparent",
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+  },
+  assistantHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    marginBottom: theme.spacing[1],
+  },
+  assistantMark: {
+    width: 30,
+    height: 30,
+    borderRadius: theme.borderRadius.full,
+    borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
-    ...theme.shadow.sm,
-    borderTopLeftRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  assistantContent: {
+    paddingLeft: 38,
+    gap: theme.spacing[2],
   },
   roleText: {
     fontSize: theme.fontSize.xs,
@@ -402,10 +513,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   reasoningCard: {
     borderRadius: theme.borderRadius.lg,
-    backgroundColor: theme.colors.surface2,
+    backgroundColor: theme.colors.surface1,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
     overflow: "hidden",
+  },
+  toolProgressCard: {
+    borderColor: "rgba(15, 122, 79, 0.24)",
+    backgroundColor: "rgba(15, 122, 79, 0.06)",
   },
   reasoningHeader: {
     minHeight: 38,
@@ -447,8 +562,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing[1],
   },
   thinkingDot: {
-    width: 7,
-    height: 7,
+    width: 6,
+    height: 6,
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.accent,
     opacity: 0.28,
@@ -522,19 +637,19 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[2],
   },
   composer: {
-    minHeight: 64,
+    minHeight: 60,
     padding: theme.spacing[2],
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
-    backgroundColor: theme.colors.surface1,
+    backgroundColor: theme.colors.surface0,
   },
   input: {
     flex: 1,
     maxHeight: 120,
     borderRadius: theme.borderRadius.xl,
     borderWidth: theme.borderWidth[0],
-    backgroundColor: theme.colors.surface2,
+    backgroundColor: theme.colors.surface1,
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     lineHeight: 22,
@@ -555,8 +670,8 @@ const styles = StyleSheet.create((theme) => ({
     textAlignVertical: "top",
   },
   attachButton: {
-    width: 48,
-    height: 48,
+    width: 44,
+    height: 44,
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.surface0,
     borderWidth: theme.borderWidth[1],
@@ -565,8 +680,8 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
   },
   sendButton: {
-    width: 48,
-    height: 48,
+    width: 44,
+    height: 44,
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.accent,
     alignItems: "center",
@@ -578,15 +693,43 @@ const styles = StyleSheet.create((theme) => ({
   approvalButtonRow: {
     flexDirection: "row",
     gap: theme.spacing[2],
-    marginTop: theme.spacing[2],
+    flexWrap: "wrap",
+    marginTop: theme.spacing[1],
+  },
+  approvalCard: {
+    borderRadius: theme.borderRadius.lg,
+    borderWidth: theme.borderWidth[1],
+    borderColor: "rgba(143, 106, 44, 0.30)",
+    backgroundColor: "rgba(143, 106, 44, 0.08)",
+    padding: theme.spacing[3],
+    gap: theme.spacing[2],
+  },
+  approvalTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  approvalTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.bold,
+    includeFontPadding: false,
+  },
+  approvalBody: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 22,
+    includeFontPadding: false,
   },
   approvalButton: {
-    minHeight: 40,
-    minWidth: 88,
+    minHeight: 42,
+    minWidth: 94,
     borderRadius: theme.borderRadius.md,
     paddingHorizontal: theme.spacing[3],
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: theme.spacing[1],
     borderWidth: theme.borderWidth[1],
   },
   approvalButtonPrimary: {
@@ -594,7 +737,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.accent,
   },
   approvalButtonSecondary: {
-    backgroundColor: theme.colors.surface0,
+    backgroundColor: theme.colors.surface1,
     borderColor: theme.colors.borderStrong,
   },
   approvalButtonTextPrimary: {
@@ -610,16 +753,13 @@ const styles = StyleSheet.create((theme) => ({
     includeFontPadding: false,
   },
   composerStack: {
-    marginHorizontal: 0,
-    marginBottom: 0,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
+    marginHorizontal: theme.spacing[3],
+    marginBottom: theme.spacing[2],
+    borderRadius: 28,
     borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderStrong,
-    backgroundColor: theme.colors.surface1,
-    ...theme.shadow.md,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface0,
+    ...theme.shadow.sm,
     overflow: "hidden",
   },
   imagePreviewRow: {
@@ -648,8 +788,8 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
   },
   messageImage: {
-    width: 220,
-    height: 156,
+    width: 244,
+    height: 172,
     borderRadius: theme.borderRadius.lg,
     backgroundColor: theme.colors.surface0,
     borderWidth: theme.borderWidth[1],
@@ -660,6 +800,55 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     backgroundColor: "rgba(0, 0, 0, 0.38)",
     paddingHorizontal: theme.spacing[4],
+  },
+  sheetBackdrop: {
+    position: "absolute",
+    zIndex: 4,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.30)",
+  },
+  settingsSheetDock: {
+    position: "absolute",
+    zIndex: 5,
+    right: 0,
+    bottom: 0,
+    left: 0,
+  },
+  settingsSheet: {
+    maxHeight: "86%",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    backgroundColor: theme.colors.surface0,
+    paddingHorizontal: theme.spacing[4],
+    paddingTop: theme.spacing[3],
+    paddingBottom: theme.spacing[3],
+    gap: theme.spacing[3],
+    ...theme.shadow.lg,
+  },
+  sheetGrabber: {
+    width: 44,
+    height: 5,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.surface3,
+    alignSelf: "center",
+  },
+  settingsHeader: {
+    gap: theme.spacing[1],
+  },
+  settingsTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.lg,
+    fontWeight: theme.fontWeight.bold,
+    includeFontPadding: false,
+  },
+  settingsSubtitle: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+    lineHeight: 18,
+    includeFontPadding: false,
   },
   editPanel: {
     borderRadius: theme.borderRadius.xl,
@@ -703,10 +892,6 @@ const styles = StyleSheet.create((theme) => ({
 
 function formatTime(value: string): string {
   return value.replace("T", " ").slice(0, 16);
-}
-
-function modelTitle(model: ChisaTalkModel): string {
-  return `${model.label} / ${model.model}`;
 }
 
 export function ChatScreen({
@@ -779,7 +964,6 @@ export function ChatScreen({
     }).start(({ finished }) => {
       if (finished) {
         setSidebarOpen(false);
-        setSettingsOpen(false);
       }
     });
   }, [sidebarProgress]);
@@ -901,6 +1085,12 @@ export function ChatScreen({
     }
     return models.find((model) => model.id === selectedConversation.modelId) ?? null;
   }, [models, selectedConversation?.modelId, selectedModelId]);
+  const workspaceStatusText = getWorkspaceStatusText({
+    hasActiveEnabledModel: activeModel?.enabled ?? false,
+    isLoadingConversation,
+    isSending,
+  });
+  const assistantProfileSummary = getAssistantProfileSummary(assistantProfile);
   const userRoleLabel = getMessageRoleLabel({
     role: "user",
     userDisplayName: user.displayName,
@@ -927,6 +1117,10 @@ export function ChatScreen({
         agentProgressText,
       }),
     [agentProgressText, isSending, messages, streamingAssistantContent],
+  );
+  const conversationGroups = useMemo(
+    () => groupConversationsByRecency(conversations),
+    [conversations],
   );
 
   const openMessageActions = useCallback(
@@ -986,54 +1180,80 @@ export function ChatScreen({
             staticMotion
             style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}
           >
-            <Text style={[styles.roleText, isUser ? styles.userRoleText : styles.assistantRoleText]}>
-              {roleLabel}
-            </Text>
-            {reasoning ? (
-              <View style={styles.reasoningCard}>
-                <AnimatedPressable
-                  accessibilityRole="button"
-                  onPress={() => toggleReasoning(message.id)}
-                  style={styles.reasoningHeader}
-                >
-                  <Text style={styles.reasoningTitle}>思考过程</Text>
-                  <Text style={styles.reasoningMeta}>{reasoningDisclosure.actionText}</Text>
-                </AnimatedPressable>
-                <Text numberOfLines={reasoningDisclosure.numberOfLines} style={styles.reasoningBody}>
-                  {reasoning}
-                </Text>
-              </View>
-            ) : null}
             {isUser ? (
-              <Text style={[styles.messageText, styles.userMessageText]}>{message.content}</Text>
+              <>
+                <Text style={[styles.roleText, styles.userRoleText]}>{roleLabel}</Text>
+                <Text style={[styles.messageText, styles.userMessageText]}>{message.content}</Text>
+                {imageAttachments.map((attachment, index) => (
+                  <Image
+                    key={`${message.id}-image-${index}`}
+                    source={{ uri: attachment.dataUrl }}
+                    style={styles.messageImage}
+                  />
+                ))}
+              </>
             ) : (
-              <MessageContent content={message.content} />
+              <>
+                <View style={styles.assistantHeader}>
+                  <View style={styles.assistantMark}>
+                    <Brain size={16} color={theme.colors.accent} />
+                  </View>
+                  <Text style={[styles.roleText, styles.assistantRoleText]}>{roleLabel}</Text>
+                </View>
+                <View style={styles.assistantContent}>
+                  {reasoning ? (
+                    <View style={styles.reasoningCard}>
+                      <AnimatedPressable
+                        accessibilityRole="button"
+                        onPress={() => toggleReasoning(message.id)}
+                        style={styles.reasoningHeader}
+                      >
+                        <Text style={styles.reasoningTitle}>思考过程</Text>
+                        <Text style={styles.reasoningMeta}>{reasoningDisclosure.actionText}</Text>
+                      </AnimatedPressable>
+                      <Text numberOfLines={reasoningDisclosure.numberOfLines} style={styles.reasoningBody}>
+                        {reasoning}
+                      </Text>
+                    </View>
+                  ) : null}
+                  <MessageContent content={message.content} />
+                  {imageAttachments.map((attachment, index) => (
+                    <Image
+                      key={`${message.id}-image-${index}`}
+                      source={{ uri: attachment.dataUrl }}
+                      style={styles.messageImage}
+                    />
+                  ))}
+                  {approvalActionState.canRespond ? (
+                    <View style={styles.approvalCard}>
+                      <View style={styles.approvalTitleRow}>
+                        <Settings size={15} color={theme.colors.gold} />
+                        <Text style={styles.approvalTitle}>审批建议</Text>
+                      </View>
+                      <Text style={styles.approvalBody}>Hermes 需要你确认以上操作是否继续。</Text>
+                      <View style={styles.approvalButtonRow}>
+                        <AnimatedPressable
+                          accessibilityRole="button"
+                          onPress={() => void onSendMessage("批准", [])}
+                          style={[styles.approvalButton, styles.approvalButtonPrimary]}
+                        >
+                          <Check size={16} color={theme.colors.accentForeground} />
+                          <Text style={styles.approvalButtonTextPrimary}>批准</Text>
+                        </AnimatedPressable>
+                        <AnimatedPressable
+                          accessibilityRole="button"
+                          onPress={() => void onSendMessage("拒绝", [])}
+                          style={[styles.approvalButton, styles.approvalButtonSecondary]}
+                        >
+                          <CircleX size={16} color={theme.colors.destructive} />
+                          <Text style={styles.approvalButtonTextSecondary}>拒绝</Text>
+                        </AnimatedPressable>
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+              </>
             )}
-            {imageAttachments.map((attachment, index) => (
-              <Image
-                key={`${message.id}-image-${index}`}
-                source={{ uri: attachment.dataUrl }}
-                style={styles.messageImage}
-              />
-            ))}
-            {approvalActionState.canRespond ? (
-              <View style={styles.approvalButtonRow}>
-                <AnimatedPressable
-                  accessibilityRole="button"
-                  onPress={() => void onSendMessage("批准", [])}
-                  style={[styles.approvalButton, styles.approvalButtonPrimary]}
-                >
-                  <Text style={styles.approvalButtonTextPrimary}>批准</Text>
-                </AnimatedPressable>
-                <AnimatedPressable
-                  accessibilityRole="button"
-                  onPress={() => void onSendMessage("拒绝", [])}
-                  style={[styles.approvalButton, styles.approvalButtonSecondary]}
-                >
-                  <Text style={styles.approvalButtonTextSecondary}>拒绝</Text>
-                </AnimatedPressable>
-              </View>
-            ) : null}
           </AnimatedPressable>
         </View>
       );
@@ -1044,6 +1264,10 @@ export function ChatScreen({
       isSending,
       onSendMessage,
       openMessageActions,
+      theme.colors.accent,
+      theme.colors.accentForeground,
+      theme.colors.destructive,
+      theme.colors.gold,
       toggleReasoning,
       user.displayName,
     ],
@@ -1053,37 +1277,46 @@ export function ChatScreen({
     (item: Extract<MessageListRow<ChisaTalkMessage>, { type: "streaming" }>) => (
       <View style={[styles.messageRow, styles.assistantMessageRow]}>
         <View style={[styles.messageBubble, styles.assistantBubble]}>
-          <Text style={[styles.roleText, styles.assistantRoleText]}>{assistantRoleLabel}</Text>
-          <View style={styles.reasoningCard}>
-            <View style={styles.reasoningHeader}>
-              <Text style={styles.reasoningTitle}>{item.agentProgressText ? "Hermes Agent" : "思考中"}</Text>
-              <Text style={styles.reasoningMeta}>
-                {item.streamingAssistantContent.trim().length > 0 ? "流式回复中" : "等待模型返回"}
+          <View style={styles.assistantHeader}>
+            <View style={styles.assistantMark}>
+              <Brain size={16} color={theme.colors.accent} />
+            </View>
+            <Text style={[styles.roleText, styles.assistantRoleText]}>{assistantRoleLabel}</Text>
+          </View>
+          <View style={styles.assistantContent}>
+            <View style={[styles.reasoningCard, styles.toolProgressCard]}>
+              <View style={styles.reasoningHeader}>
+                <Text style={styles.reasoningTitle}>
+                  {item.agentProgressText ? "工具进度" : "Hermes 正在思考"}
+                </Text>
+                <Text style={styles.reasoningMeta}>
+                  {item.streamingAssistantContent.trim().length > 0 ? "流式回复中" : "等待模型返回"}
+                </Text>
+              </View>
+              <Text style={styles.reasoningBody}>
+                {item.agentProgressText ?? "正在组织上下文、图片和历史消息。"}
               </Text>
             </View>
-            <Text style={styles.reasoningBody}>
-              {item.agentProgressText ?? "正在组织上下文、图片和历史消息。"}
-            </Text>
+            {item.streamingAssistantContent.trim().length > 0 ? (
+              <MessageContent content={item.streamingAssistantContent} />
+            ) : (
+              <>
+                <Text style={styles.thinkingText}>正在生成回复</Text>
+                <View style={styles.thinkingDots}>
+                  {[0, 1, 2].map((index) => (
+                    <View
+                      key={index}
+                      style={[styles.thinkingDot, thinkingFrame === index ? styles.thinkingDotActive : null]}
+                    />
+                  ))}
+                </View>
+              </>
+            )}
           </View>
-          {item.streamingAssistantContent.trim().length > 0 ? (
-            <MessageContent content={item.streamingAssistantContent} />
-          ) : (
-            <>
-              <Text style={styles.thinkingText}>正在生成回复</Text>
-              <View style={styles.thinkingDots}>
-                {[0, 1, 2].map((index) => (
-                  <View
-                    key={index}
-                    style={[styles.thinkingDot, thinkingFrame === index ? styles.thinkingDotActive : null]}
-                  />
-                ))}
-              </View>
-            </>
-          )}
         </View>
       </View>
     ),
-    [assistantRoleLabel, thinkingFrame],
+    [assistantRoleLabel, theme.colors.accent, thinkingFrame],
   );
 
   const renderMessageListRow = useCallback(
@@ -1147,14 +1380,24 @@ export function ChatScreen({
           <Menu size={20} color={theme.colors.foreground} />
         </AnimatedPressable>
         <View style={styles.titleBlock}>
-          <Text style={styles.appName} numberOfLines={1}>
-            {visibleConversationTitle}
-          </Text>
-          <Text style={styles.subText} numberOfLines={1}>
-            {activeModel ? modelTitle(activeModel) : "Hermes Agent"}
-          </Text>
+          <View style={styles.titleRow}>
+            <Text style={styles.appName} numberOfLines={1}>
+              {visibleConversationTitle}
+            </Text>
+            <ChevronDown size={16} color={theme.colors.foregroundMuted} />
+          </View>
+          <View style={styles.statusRow}>
+            <View style={styles.statusDot} />
+            <Text style={styles.subText} numberOfLines={1}>
+              {workspaceStatusText}
+            </Text>
+          </View>
         </View>
-        <AnimatedPressable accessibilityRole="button" onPress={() => void onRefresh()} style={styles.iconButton}>
+        <AnimatedPressable
+          accessibilityRole="button"
+          onPress={() => void onRefresh()}
+          style={[styles.iconButton, styles.iconButtonFramed]}
+        >
           <RefreshCw size={18} color={theme.colors.foreground} />
         </AnimatedPressable>
       </View>
@@ -1225,7 +1468,7 @@ export function ChatScreen({
               multiline={isDraftMultiline}
               onChangeText={setDraft}
               onSubmitEditing={handleSend}
-              placeholder={activeModel?.enabled ? "输入消息" : "Hermes Agent 不可用"}
+              placeholder={activeModel?.enabled ? "输入消息或附加图片" : "Hermes 暂不可用"}
               placeholderTextColor={theme.colors.foregroundMuted}
               style={[styles.input, isDraftMultiline ? styles.inputMultiline : styles.inputSingleLine]}
               value={draft}
@@ -1274,6 +1517,12 @@ export function ChatScreen({
                 <View>
                   <Text style={styles.sidebarTitle}>ChisaTalk</Text>
                   <Text style={styles.userText}>已登录：{user.displayName}</Text>
+                  <View style={styles.sidebarStatusRow}>
+                    <View style={styles.statusDot} />
+                    <Text style={styles.sidebarStatusText}>
+                      {activeModel?.enabled ? "Hermes 可用" : "Hermes 暂不可用"}
+                    </Text>
+                  </View>
                 </View>
               </View>
               <AnimatedPressable accessibilityRole="button" onPress={closeSidebar} style={styles.iconButton}>
@@ -1290,128 +1539,165 @@ export function ChatScreen({
                 }}
                 style={[styles.actionButton, styles.actionButtonPrimary]}
               >
-                <Plus size={16} color={theme.colors.accentForeground} />
-                <Text style={[styles.actionText, styles.actionTextPrimary]}>新建会话</Text>
+                <View style={styles.actionLabelRow}>
+                  <Plus size={18} color={theme.colors.foreground} />
+                  <Text style={[styles.actionText, styles.actionTextPrimary]}>新建会话</Text>
+                </View>
+                <ChevronRight size={16} color={theme.colors.foregroundMuted} />
               </AnimatedPressable>
               <AnimatedPressable
                 accessibilityRole="button"
-                onPress={openSettings}
+                onPress={() => {
+                  openSettings();
+                  closeSidebar();
+                }}
                 style={styles.actionButton}
               >
-                <Settings size={16} color={theme.colors.foreground} />
-                <Text style={styles.actionText}>人设设置</Text>
+                <View style={styles.actionLabelRow}>
+                  <Settings size={17} color={theme.colors.foreground} />
+                  <View style={styles.actionTextBlock}>
+                    <Text style={styles.actionText}>人设设置</Text>
+                    <Text style={styles.actionTextMuted} numberOfLines={1}>
+                      {assistantProfileSummary}
+                    </Text>
+                  </View>
+                </View>
+                <ChevronRight size={16} color={theme.colors.foregroundMuted} />
               </AnimatedPressable>
-              <View style={styles.secondaryActionRow}>
-                <AnimatedPressable
-                  accessibilityRole="button"
-                  onPress={() => void onRefresh()}
-                  style={[styles.actionButton, styles.secondaryActionButton]}
-                >
-                  <RefreshCw size={16} color={theme.colors.foreground} />
-                  <Text style={styles.actionText}>{isRefreshing ? "刷新中" : "刷新"}</Text>
-                </AnimatedPressable>
-                <AnimatedPressable
-                  accessibilityRole="button"
-                  onPress={() => void onLogout()}
-                  style={[styles.actionButton, styles.secondaryActionButton]}
-                >
-                  <LogOut size={16} color={theme.colors.foreground} />
-                  <Text style={styles.actionText}>退出</Text>
-                </AnimatedPressable>
-              </View>
             </View>
 
-            {settingsOpen ? (
-              <>
-                <Text style={styles.sectionLabel}>人设</Text>
-                <ScrollView contentContainerStyle={styles.settingsContent} style={styles.settingsScroll}>
-                  <View style={styles.settingsPanel}>
-                    {getAssistantProfileFields().map((field) => (
-                      <View key={field.key} style={styles.settingsField}>
-                        <Text style={styles.settingsLabel}>{field.label}</Text>
-                        <TextInput
-                          multiline={field.multiline}
-                          onChangeText={(value) =>
-                            setSettingsDraft((current) => ({
-                              ...current,
-                              [field.key]: value,
-                            }))
-                          }
-                          placeholder={field.placeholder}
-                          placeholderTextColor={theme.colors.foregroundMuted}
+            <View style={styles.conversationScroll}>
+              <Text style={styles.sectionLabel}>会话</Text>
+              <ScrollView contentContainerStyle={styles.conversationList} showsVerticalScrollIndicator={false}>
+                {conversations.length === 0 ? (
+                  <Text style={styles.emptySidebar}>暂无历史会话。</Text>
+                ) : (
+                  conversationGroups.map((group) => (
+                    <View key={group.title}>
+                      <Text style={styles.sectionLabel}>{group.title}</Text>
+                      {group.items.map((conversation) => (
+                        <AnimatedPressable
+                          accessibilityRole="button"
+                          accessibilityHint="长按删除会话"
+                          key={conversation.id}
+                          onLongPress={() => confirmDeleteConversation(conversation)}
+                          onPress={() => {
+                            closeSidebar();
+                            void onSelectConversation(conversation.id);
+                          }}
                           style={[
-                            styles.settingsInput,
-                            field.multiline ? styles.settingsTextArea : null,
+                            styles.conversationItem,
+                            selectedConversation?.id === conversation.id ? styles.conversationItemActive : null,
                           ]}
-                          value={settingsDraft[field.key]}
-                        />
-                      </View>
-                    ))}
-                    <Text style={styles.settingsHint}>
-                      保存后会用于下一次发送消息的系统提示，不会改写历史会话。
-                    </Text>
-                    <View style={styles.settingsButtonRow}>
-                      <AnimatedPressable
-                        accessibilityRole="button"
-                        disabled={isSavingSettings}
-                        onPress={closeSettings}
-                        style={[styles.actionButton, styles.secondaryActionButton]}
-                      >
-                        <Text style={styles.actionText}>取消</Text>
-                      </AnimatedPressable>
-                      <AnimatedPressable
-                        accessibilityRole="button"
-                        accessibilityState={{ busy: isSavingSettings, disabled: isSavingSettings }}
-                        disabled={isSavingSettings}
-                        onPress={() => void saveSettings()}
-                        style={[
-                          styles.actionButton,
-                          styles.actionButtonPrimary,
-                          styles.settingsSaveButton,
-                          isSavingSettings ? styles.sendButtonDisabled : null,
-                        ]}
-                      >
-                        <Text style={[styles.actionText, styles.actionTextPrimary]}>
-                          {isSavingSettings ? "保存中" : "保存"}
-                        </Text>
-                      </AnimatedPressable>
+                        >
+                          <View style={styles.conversationMetaRow}>
+                            <Text style={styles.conversationTitle} numberOfLines={1}>
+                              {formatConversationListTitle(conversation.title, participantLabels)}
+                            </Text>
+                            <Text style={styles.conversationTime}>{formatTime(conversation.updatedAt)}</Text>
+                          </View>
+                        </AnimatedPressable>
+                      ))}
                     </View>
-                  </View>
-                </ScrollView>
-              </>
-            ) : (
-              <>
-                <Text style={styles.sectionLabel}>会话</Text>
-                <ScrollView contentContainerStyle={styles.conversationList} style={styles.conversationScroll}>
-                  {conversations.length === 0 ? (
-                    <Text style={styles.emptySidebar}>暂无历史会话。</Text>
-                  ) : (
-                    conversations.map((conversation) => (
-                      <AnimatedPressable
-                        accessibilityRole="button"
-                        accessibilityHint="长按删除会话"
-                        key={conversation.id}
-                        onLongPress={() => confirmDeleteConversation(conversation)}
-                        onPress={() => {
-                          closeSidebar();
-                          void onSelectConversation(conversation.id);
-                        }}
-                        style={[
-                          styles.conversationItem,
-                          selectedConversation?.id === conversation.id ? styles.conversationItemActive : null,
-                        ]}
-                      >
-                        <Text style={styles.conversationTitle} numberOfLines={1}>
-                          {formatConversationListTitle(conversation.title, participantLabels)}
-                        </Text>
-                        <Text style={styles.conversationTime}>{formatTime(conversation.updatedAt)}</Text>
-                      </AnimatedPressable>
-                    ))
-                  )}
-                </ScrollView>
-              </>
-            )}
+                  ))
+                )}
+                <Text style={styles.conversationHint}>长按会话可删除</Text>
+              </ScrollView>
+            </View>
+
+            <View style={styles.secondaryActionRow}>
+              <AnimatedPressable
+                accessibilityRole="button"
+                onPress={() => void onRefresh()}
+                style={styles.footerActionButton}
+              >
+                <RefreshCw size={16} color={theme.colors.foreground} />
+                <Text style={styles.actionText}>{isRefreshing ? "刷新中" : "刷新"}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
+                accessibilityRole="button"
+                onPress={() => void onLogout()}
+                style={styles.footerActionButton}
+              >
+                <LogOut size={16} color={theme.colors.foreground} />
+                <Text style={styles.actionText}>退出登录</Text>
+              </AnimatedPressable>
+            </View>
           </Animated.View>
+        </>
+      ) : null}
+      {settingsOpen ? (
+        <>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="关闭人设设置"
+            onPress={closeSettings}
+            style={styles.sheetBackdrop}
+          />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            pointerEvents="box-none"
+            style={styles.settingsSheetDock}
+          >
+            <View style={styles.settingsSheet}>
+              <View style={styles.sheetGrabber} />
+              <View style={styles.settingsHeader}>
+                <Text maxFontSizeMultiplier={1.2} style={styles.settingsTitle}>人设设置</Text>
+                <Text maxFontSizeMultiplier={1.2} style={styles.settingsSubtitle}>
+                  设置会影响 ChisaTalk 的回复风格与表现，不会改写历史会话。
+                </Text>
+              </View>
+              <ScrollView contentContainerStyle={styles.settingsContent} showsVerticalScrollIndicator={false}>
+                {getAssistantProfileFields().map((field) => (
+                  <View key={field.key} style={styles.settingsField}>
+                    <Text maxFontSizeMultiplier={1.15} style={styles.settingsLabel}>{field.label}</Text>
+                    <TextInput
+                      maxFontSizeMultiplier={1.15}
+                      multiline={field.multiline}
+                      onChangeText={(value) =>
+                        setSettingsDraft((current) => ({
+                          ...current,
+                          [field.key]: value,
+                        }))
+                      }
+                      placeholder={field.placeholder}
+                      placeholderTextColor={theme.colors.foregroundMuted}
+                      style={[
+                        styles.settingsInput,
+                        field.multiline ? styles.settingsTextArea : null,
+                      ]}
+                      value={settingsDraft[field.key]}
+                    />
+                  </View>
+                ))}
+                <View style={styles.settingsButtonRow}>
+                  <AnimatedPressable
+                    accessibilityRole="button"
+                    disabled={isSavingSettings}
+                    onPress={closeSettings}
+                    style={styles.settingsActionButton}
+                  >
+                    <Text maxFontSizeMultiplier={1.15} style={styles.actionText}>取消</Text>
+                  </AnimatedPressable>
+                  <AnimatedPressable
+                    accessibilityRole="button"
+                    accessibilityState={{ busy: isSavingSettings, disabled: isSavingSettings }}
+                    disabled={isSavingSettings}
+                    onPress={() => void saveSettings()}
+                    style={[
+                      styles.settingsActionButton,
+                      styles.settingsActionButtonPrimary,
+                      isSavingSettings ? styles.sendButtonDisabled : null,
+                    ]}
+                  >
+                    <Text maxFontSizeMultiplier={1.15} style={[styles.actionText, styles.actionTextPrimary]}>
+                      {isSavingSettings ? "保存中" : "保存"}
+                    </Text>
+                  </AnimatedPressable>
+                </View>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
         </>
       ) : null}
       <Modal

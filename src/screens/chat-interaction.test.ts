@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   formatConversationListTitle,
+  groupConversationsByRecency,
   getMessageRoleLabel,
   getChatComposerState,
   getLatestUserMessageId,
   getMessageActionState,
   getPendingHermesApprovalActionState,
   getReasoningDisclosureState,
+  getAssistantProfileSummary,
   getSendButtonAccessibilityState,
+  getWorkspaceStatusText,
 } from "./chat-interaction";
 
 describe("getChatComposerState", () => {
@@ -143,6 +146,56 @@ describe("formatConversationListTitle", () => {
   it("keeps normal conversation titles intact", () => {
     expect(formatConversationListTitle("你觉得这个方案怎么样")).toBe("你觉得这个方案怎么样");
     expect(formatConversationListTitle("新的会话")).toBe("新的会话");
+  });
+});
+
+describe("groupConversationsByRecency", () => {
+  it("groups conversations into Chinese recency sections for the drawer", () => {
+    const groups = groupConversationsByRecency(
+      [
+        { id: "older", updatedAt: "2026-06-20T08:00:00.000Z" },
+        { id: "today", updatedAt: "2026-06-28T04:00:00.000Z" },
+        { id: "week", updatedAt: "2026-06-25T12:00:00.000Z" },
+      ],
+      new Date("2026-06-28T10:00:00.000Z"),
+    );
+
+    expect(groups).toEqual([
+      { title: "今天", items: [{ id: "today", updatedAt: "2026-06-28T04:00:00.000Z" }] },
+      { title: "本周", items: [{ id: "week", updatedAt: "2026-06-25T12:00:00.000Z" }] },
+      { title: "更早", items: [{ id: "older", updatedAt: "2026-06-20T08:00:00.000Z" }] },
+    ]);
+  });
+});
+
+describe("workspace labels", () => {
+  it("keeps the top status Chinese and tied to the real workspace state", () => {
+    expect(
+      getWorkspaceStatusText({
+        hasActiveEnabledModel: true,
+        isLoadingConversation: false,
+        isSending: false,
+      }),
+    ).toBe("Hermes 在线");
+
+    expect(
+      getWorkspaceStatusText({
+        hasActiveEnabledModel: true,
+        isLoadingConversation: false,
+        isSending: true,
+      }),
+    ).toBe("Hermes 正在回复");
+  });
+
+  it("summarizes persona settings without exposing an empty form in the drawer", () => {
+    expect(
+      getAssistantProfileSummary({
+        aiName: "千咲",
+        personality: "冷静、直接",
+        persona: "",
+        userAddress: "指挥官",
+      }),
+    ).toBe("AI 名称：千咲 · 称呼：指挥官");
   });
 });
 

@@ -31,7 +31,7 @@ StyleSheet.configure({
     xl: 1200,
   },
   settings: {
-    initialTheme: "wallpaper",
+    initialTheme: "light",
   },
 });
 

@@ -35,7 +35,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[5],
     paddingTop: theme.spacing[12],
     paddingBottom: theme.spacing[8],
-    gap: theme.spacing[8],
+    gap: theme.spacing[6],
   },
   brand: {
     gap: theme.spacing[4],
@@ -66,13 +66,15 @@ const styles = StyleSheet.create((theme) => ({
   badge: {
     minHeight: 34,
     borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.accentSoft,
+    backgroundColor: theme.colors.surface1,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: theme.spacing[3],
   },
   badgeText: {
-    color: theme.colors.accent,
+    color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.semibold,
   },
@@ -88,21 +90,37 @@ const styles = StyleSheet.create((theme) => ({
   },
   subtitle: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.lg,
-    lineHeight: 26,
+    fontSize: theme.fontSize.base,
+    lineHeight: 24,
   },
   serverText: {
     color: theme.colors.foregroundSubtle,
     fontSize: theme.fontSize.xs,
+    lineHeight: 18,
   },
   form: {
-    borderRadius: theme.borderRadius.xl,
+    borderRadius: 20,
     backgroundColor: theme.colors.surface1,
-    padding: theme.spacing[4],
+    padding: theme.spacing[5],
     gap: theme.spacing[4],
     borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderStrong,
-    ...theme.shadow.lg,
+    borderColor: theme.colors.border,
+    ...theme.shadow.sm,
+  },
+  formHeader: {
+    gap: theme.spacing[1],
+  },
+  formTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.xl,
+    fontWeight: theme.fontWeight.bold,
+    includeFontPadding: false,
+  },
+  formHint: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 20,
+    includeFontPadding: false,
   },
   field: {
     gap: theme.spacing[2],
@@ -133,7 +151,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   submitButton: {
     minHeight: 52,
-    borderRadius: theme.borderRadius.lg,
+    borderRadius: theme.borderRadius.full,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
@@ -262,17 +280,21 @@ export function LoginScreen({ errorMessage, isSubmitting, onSubmit }: LoginScree
                 <Text style={styles.markText}>CT</Text>
               </View>
               <View style={styles.badge}>
-                <Text style={styles.badgeText}>PRIVATE AI CONSOLE</Text>
+                <Text style={styles.badgeText}>中文 AI 工作台</Text>
               </View>
             </View>
             <View style={styles.headingGroup}>
               <Text style={styles.appName}>ChisaTalk</Text>
-              <Text style={styles.subtitle}>安静、直接、可持续使用的 AI 对话入口。</Text>
+              <Text style={styles.subtitle}>连接 Hermes 的中文对话入口，支持图片、人设和会话管理。</Text>
             </View>
-            <Text style={styles.serverText}>{CHISATALK_API_BASE_URL}</Text>
+            <Text style={styles.serverText}>服务地址：{CHISATALK_API_BASE_URL}</Text>
           </Animated.View>
 
           <Animated.View style={[styles.form, formIntroStyle]}>
+            <View style={styles.formHeader}>
+              <Text style={styles.formTitle}>登录</Text>
+              <Text style={styles.formHint}>账号由 ChisaTalk 服务端管理，移动端不会保存模型密钥。</Text>
+            </View>
             <View style={styles.field}>
               <Text style={styles.label}>账号</Text>
               <TextInput

@@ -64,6 +64,28 @@ interface MessageActionState {
   canEditAndRegenerate: boolean;
 }
 
+interface ConversationRecencyInput {
+  updatedAt: string;
+}
+
+interface ConversationRecencyGroup<TConversation extends ConversationRecencyInput> {
+  title: "今天" | "本周" | "更早";
+  items: TConversation[];
+}
+
+interface WorkspaceStatusTextInput {
+  hasActiveEnabledModel: boolean;
+  isLoadingConversation: boolean;
+  isSending: boolean;
+}
+
+interface AssistantProfileSummaryInput {
+  aiName: string;
+  personality: string;
+  persona: string;
+  userAddress: string;
+}
+
 const DEFAULT_CONVERSATION_TITLE = "新的会话";
 const TITLE_LABEL_SEPARATOR_PATTERN = /^[\s/|·,，:：\-–—]+/;
 const DEFAULT_PARTICIPANT_LABELS = ["你", "ChisaTalk"];
@@ -110,6 +132,79 @@ export function formatConversationListTitle(
   }
 
   return normalizedTitle;
+}
+
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function daysBetweenLocalDates(value: Date, now: Date): number {
+  const msPerDay = 24 * 60 * 60 * 1000;
+  return Math.floor(
+    (startOfLocalDay(now).getTime() - startOfLocalDay(value).getTime()) / msPerDay,
+  );
+}
+
+function getConversationRecencyTitle(updatedAt: string, now: Date): ConversationRecencyGroup<ConversationRecencyInput>["title"] {
+  const updatedDate = new Date(updatedAt);
+  if (Number.isNaN(updatedDate.getTime())) {
+    return "更早";
+  }
+  const dayDistance = daysBetweenLocalDates(updatedDate, now);
+  if (dayDistance <= 0) {
+    return "今天";
+  }
+  if (dayDistance <= 7) {
+    return "本周";
+  }
+  return "更早";
+}
+
+export function groupConversationsByRecency<TConversation extends ConversationRecencyInput>(
+  conversations: TConversation[],
+  now = new Date(),
+): ConversationRecencyGroup<TConversation>[] {
+  const grouped: Record<ConversationRecencyGroup<TConversation>["title"], TConversation[]> = {
+    今天: [],
+    本周: [],
+    更早: [],
+  };
+
+  conversations.forEach((conversation) => {
+    grouped[getConversationRecencyTitle(conversation.updatedAt, now)].push(conversation);
+  });
+
+  return (["今天", "本周", "更早"] as const)
+    .map((title) => ({ title, items: grouped[title] }))
+    .filter((group) => group.items.length > 0);
+}
+
+export function getWorkspaceStatusText(input: WorkspaceStatusTextInput): string {
+  if (!input.hasActiveEnabledModel) {
+    return "Hermes 暂不可用";
+  }
+  if (input.isLoadingConversation) {
+    return "正在载入会话";
+  }
+  if (input.isSending) {
+    return "Hermes 正在回复";
+  }
+  return "Hermes 在线";
+}
+
+export function getAssistantProfileSummary(input: AssistantProfileSummaryInput): string {
+  const aiName = input.aiName.trim() || "ChisaTalk";
+  const userAddress = input.userAddress.trim();
+  if (userAddress) {
+    return `AI 名称：${aiName} · 称呼：${userAddress}`;
+  }
+  if (input.personality.trim()) {
+    return `AI 名称：${aiName} · 已设置性格`;
+  }
+  if (input.persona.trim()) {
+    return `AI 名称：${aiName} · 已设置人设`;
+  }
+  return `AI 名称：${aiName} · 未设置称呼`;
 }
 
 export function getMessageRoleLabel(input: MessageRoleLabelInput): string {

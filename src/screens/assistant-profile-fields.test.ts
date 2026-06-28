@@ -19,13 +19,13 @@ describe("getAssistantProfileFields", () => {
       {
         key: "personality",
         label: "性格",
-        placeholder: "例如：冷静、直接，但会照顾用户情绪",
+        placeholder: "冷静、直接、照顾情绪",
         multiline: true,
       },
       {
         key: "persona",
         label: "人设",
-        placeholder: "例如：鸣潮风格的私人 AI 助手",
+        placeholder: "鸣潮风格私人 AI 助手",
         multiline: true,
       },
     ]);
