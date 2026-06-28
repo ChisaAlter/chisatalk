@@ -53,6 +53,7 @@ android/local.properties
 android/app/debug.keystore
 
 # local verification artifacts
+verification-artifacts/
 device-*.png
 device-*.xml
 web-ui-redesign-mobile.png

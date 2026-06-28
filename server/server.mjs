@@ -1,11 +1,14 @@
 import { createHmac, pbkdf2Sync, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import initSqlJs from "sql.js";
+import { readRuntimeConfig } from "./lib/config.mjs";
+import { loadDatabase, persistDatabase, run, selectAll, selectOne } from "./lib/database.mjs";
+import { buildGitHubLookupSystemMessage } from "./lib/github-lookup.mjs";
+import { assertModelExists, getModelConfig, loadVisibleModels } from "./lib/models.mjs";
 
 const require = createRequire(import.meta.url);
 const SQL_WASM_PATH = require.resolve("sql.js/dist/sql-wasm.wasm");
@@ -20,10 +23,8 @@ const HERMES_SEARCH_CONSENT_PROMPT =
     "凡是涉及 GitHub、GitLab、仓库、repo、项目主页、源码地址、开源项目是否存在、star 数、issue、release、README 或代码位置的问题，必须优先调用 web_search 查询公开网页或 GitHub 页面；不要凭记忆回答，也不要改用 execute_code 运行 curl 或脚本来替代 web_search。",
     "回答这类时效问题时，不要凭模型记忆或旧上下文直接给结论；如果搜索工具不可用，应明确说明无法实时核验。",
   ].join("\n");
-const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
 
 let lastTimestampMs = 0;
-let databaseWriteQueue = Promise.resolve();
 const failedLoginAttempts = new Map();
 
 function nowIso() {
@@ -38,112 +39,6 @@ function isRecord(value) {
 
 function requestId() {
   return `req_${randomBytes(8).toString("hex")}`;
-}
-
-function findGitHubRepoRefs(text) {
-  if (typeof text !== "string" || !/(github|仓库|repo|开源项目|项目)/iu.test(text)) {
-    return [];
-  }
-
-  const refs = new Map();
-  const patterns = [
-    /(?:https?:\/\/)?github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9._-]{1,100})(?:\.git)?/giu,
-    /\b([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9._-]{1,100})(?:\.git)?\b/gu,
-  ];
-
-  for (const pattern of patterns) {
-    for (const match of text.matchAll(pattern)) {
-      const owner = match[1];
-      const repo = match[2]?.replace(/(?:\.git)?[).,，。；;:：!?！？]+$/u, "");
-      if (!owner || !repo || repo.includes("/")) {
-        continue;
-      }
-      refs.set(`${owner}/${repo}`.toLowerCase(), { owner, repo });
-      if (refs.size >= 3) {
-        return [...refs.values()];
-      }
-    }
-  }
-  return [...refs.values()];
-}
-
-async function fetchGitHubRepoLookup(ref, options) {
-  const baseUrl = (options.githubApiBaseUrl ?? DEFAULT_GITHUB_API_BASE_URL).replace(/\/+$/, "");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
-  try {
-    const response = await fetch(`${baseUrl}/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}`, {
-      signal: controller.signal,
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "ChisaTalk-Server",
-      },
-    });
-    if (response.status === 404) {
-      return {
-        fullName: `${ref.owner}/${ref.repo}`,
-        exists: false,
-        note: "GitHub API 返回 404，公开仓库未找到。",
-      };
-    }
-    if (!response.ok) {
-      return {
-        fullName: `${ref.owner}/${ref.repo}`,
-        exists: null,
-        note: `GitHub API 返回 HTTP ${response.status}，无法精确核验。`,
-      };
-    }
-    const payload = await readJsonResponse(response);
-    return {
-      fullName:
-        isRecord(payload) && typeof payload.full_name === "string"
-          ? payload.full_name
-          : `${ref.owner}/${ref.repo}`,
-      exists: true,
-      htmlUrl: isRecord(payload) && typeof payload.html_url === "string" ? payload.html_url : null,
-      private: isRecord(payload) && typeof payload.private === "boolean" ? payload.private : null,
-      archived: isRecord(payload) && typeof payload.archived === "boolean" ? payload.archived : null,
-      pushedAt: isRecord(payload) && typeof payload.pushed_at === "string" ? payload.pushed_at : null,
-    };
-  } catch (error) {
-    return {
-      fullName: `${ref.owner}/${ref.repo}`,
-      exists: null,
-      note: `GitHub API 请求失败：${error instanceof Error ? error.message : "unknown error"}`,
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function buildGitHubLookupSystemMessage(text, options) {
-  const refs = findGitHubRepoRefs(text);
-  if (refs.length === 0) {
-    return null;
-  }
-  const lookups = await Promise.all(refs.map((ref) => fetchGitHubRepoLookup(ref, options)));
-  const lines = lookups.map((lookup) => {
-    if (lookup.exists === true) {
-      return [
-        `- ${lookup.fullName}: 存在`,
-        lookup.htmlUrl ? `链接 ${lookup.htmlUrl}` : null,
-        typeof lookup.private === "boolean" ? `private=${lookup.private}` : null,
-        typeof lookup.archived === "boolean" ? `archived=${lookup.archived}` : null,
-        lookup.pushedAt ? `pushed_at=${lookup.pushedAt}` : null,
-      ]
-        .filter(Boolean)
-        .join("，");
-    }
-    if (lookup.exists === false) {
-      return `- ${lookup.fullName}: 不存在，${lookup.note}`;
-    }
-    return `- ${lookup.fullName}: 无法核验，${lookup.note}`;
-  });
-  return [
-    "GitHub 精确仓库查询结果（由 ChisaTalk Server 通过 GitHub API 实时核验）：",
-    ...lines,
-    "回答 GitHub 仓库是否存在时，以上精确查询结果优先于通用网页搜索结果。",
-  ].join("\n");
 }
 
 function sendJson(response, status, payload) {
@@ -321,50 +216,6 @@ function rowToMessage(row) {
   };
 }
 
-async function loadDatabase(SQL, databasePath) {
-  await mkdir(dirname(databasePath), { recursive: true });
-  if (existsSync(databasePath)) {
-    const data = readFileSync(databasePath);
-    return new SQL.Database(data);
-  }
-  return new SQL.Database();
-}
-
-function selectAll(db, sql, params = []) {
-  const statement = db.prepare(sql);
-  try {
-    statement.bind(params);
-    const rows = [];
-    while (statement.step()) {
-      rows.push(statement.getAsObject());
-    }
-    return rows;
-  } finally {
-    statement.free();
-  }
-}
-
-function selectOne(db, sql, params = []) {
-  const rows = selectAll(db, sql, params);
-  return rows.length > 0 ? rows[0] : null;
-}
-
-async function persistDatabase(db, databasePath) {
-  const snapshot = Buffer.from(db.export());
-  databaseWriteQueue = databaseWriteQueue.then(async () => {
-    await mkdir(dirname(databasePath), { recursive: true });
-    const tempPath = `${databasePath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, snapshot);
-    await rename(tempPath, databasePath);
-  });
-  await databaseWriteQueue;
-}
-
-async function run(db, databasePath, sql, params = []) {
-  db.run(sql, params);
-  await persistDatabase(db, databasePath);
-}
-
 async function initializeSchema(db, databasePath) {
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
@@ -423,50 +274,6 @@ async function ensureUser(db, databasePath, input) {
     "INSERT INTO users (id, username, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)",
     [input.username, input.username, hashPassword(input.password), input.displayName, createdAt],
   );
-}
-
-async function loadModels(modelsPath) {
-  const text = await readFile(modelsPath, "utf8");
-  const parsed = JSON.parse(text);
-  if (!isRecord(parsed) || !Array.isArray(parsed.models) || typeof parsed.updatedAt !== "string") {
-    throw new Error("models.json 格式不正确");
-  }
-  return parsed;
-}
-
-async function getModelConfig(modelsPath, modelId) {
-  const config = await loadModels(modelsPath);
-  const found = config.models.find((model) => {
-    return isRecord(model) && model.id === modelId;
-  });
-  if (!found) {
-    throw Object.assign(new Error("模型不存在"), {
-      status: 422,
-      code: "validation_failed",
-    });
-  }
-  return found;
-}
-
-async function assertModelExists(modelsPath, modelId) {
-  await getModelConfig(modelsPath, modelId);
-}
-
-function sanitizeModel(model) {
-  if (!isRecord(model)) {
-    return model;
-  }
-
-  const { apiKey, chatCompletionsUrl, ...visibleModel } = model;
-  return visibleModel;
-}
-
-async function loadVisibleModels(modelsPath) {
-  const config = await loadModels(modelsPath);
-  return {
-    ...config,
-    models: config.models.map(sanitizeModel),
-  };
 }
 
 async function insertMessage(db, databasePath, conversationId, input) {
@@ -1881,35 +1688,7 @@ export async function createChisaTalkServer(options) {
   return server;
 }
 
-export function readRuntimeConfig(env = process.env) {
-  const databasePath = env.CHISATALK_DATABASE_PATH;
-  const modelsPath = env.CHISATALK_MODELS_PATH;
-  const sessionSecret = env.CHISATALK_SESSION_SECRET;
-  const adminUsername = env.CHISATALK_ADMIN_USERNAME;
-  const adminPassword = env.CHISATALK_ADMIN_PASSWORD;
-  const adminDisplayName = env.CHISATALK_ADMIN_DISPLAY_NAME;
-  const usersJson = env.CHISATALK_USERS_JSON;
-  const hermesApiBaseUrl = env.CHISATALK_HERMES_API_BASE_URL;
-  const hermesApiKey = env.CHISATALK_HERMES_API_KEY;
-  const hermesPresetPath = env.CHISATALK_HERMES_PRESET_PATH;
-
-  if (!databasePath || !modelsPath || !sessionSecret) {
-    throw new Error("缺少 CHISATALK_DATABASE_PATH、CHISATALK_MODELS_PATH 或 CHISATALK_SESSION_SECRET");
-  }
-
-  return {
-    databasePath,
-    modelsPath,
-    sessionSecret,
-    adminUsername,
-    adminPassword,
-    adminDisplayName,
-    users: usersJson ? JSON.parse(usersJson) : [],
-    hermesApiBaseUrl,
-    hermesApiKey,
-    hermesPresetPath,
-  };
-}
+export { readRuntimeConfig };
 
 const executedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
 if (import.meta.url === executedPath) {

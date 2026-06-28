@@ -1,20 +1,6 @@
-declare const process:
-  | {
-      env?: {
-        EXPO_PUBLIC_CHISATALK_API_BASE_URL?: string;
-      };
-    }
-  | undefined;
+import { CHISATALK_API_BASE_URL } from "./api-base-url";
 
-function readApiBaseUrl(): string {
-  const configured = process?.env?.EXPO_PUBLIC_CHISATALK_API_BASE_URL?.trim();
-  return (configured && configured.length > 0 ? configured : "http://38.76.185.154:8789").replace(
-    /\/+$/,
-    "",
-  );
-}
-
-export const CHISATALK_API_BASE_URL = readApiBaseUrl();
+export { CHISATALK_API_BASE_URL };
 
 export interface ChisaTalkUser {
   id: string;

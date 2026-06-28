@@ -1,6 +1,6 @@
 # ChisaTalk Server
 
-轻量 Node ESM 服务端，只负责账号登录、模型配置下发、会话和完整消息保存。
+轻量 Node ESM 服务端，负责账号登录、模型配置下发、会话和完整消息保存，并代理 OpenAI-compatible provider 与 Hermes Agent。移动端只访问 ChisaTalk Server，不直接访问 provider 或 Hermes API Server。
 
 ## 环境变量
 
@@ -21,6 +21,8 @@ npm install
 npm test
 npm start
 ```
+
+默认测试入口会运行所有 `*.test.mjs`，包括服务端模块边界测试和完整 HTTP/Hermes 回归测试。
 
 ## 模型配置
 
@@ -60,3 +62,12 @@ CHISATALK_HERMES_API_KEY=replace-with-strong-secret
 ```
 
 Hermes Agent 可能具备终端、文件、搜索、技能等高权限工具能力。不要让移动端或公网直接访问 Hermes API Server；公网入口只暴露 ChisaTalk Server。
+
+## 模块边界
+
+- `lib/config.mjs`: 读取并校验 `CHISATALK_*` 运行配置。
+- `lib/database.mjs`: 封装 SQL.js 加载、查询、串行持久化写入。
+- `lib/models.mjs`: 读取模型配置、校验模型存在、移除 provider secret 后下发给移动端。
+- `lib/github-lookup.mjs`: 对 GitHub `owner/repo` 问题做服务端精确 API 查询，并注入 Hermes system context。
+
+这些模块是内部边界，不改变移动端 API wire shape。

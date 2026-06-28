@@ -15,6 +15,7 @@
     "src/components/**/*.tsx",
     "src/query/query-client.ts",
     "src/screens/**/*.tsx",
+    "src/services/**/*.ts",
     "src/settings/**/*.ts",
     "src/styles/theme.ts",
     "src/styles/unistyles.ts",

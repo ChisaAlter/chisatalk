@@ -3,6 +3,7 @@ import {
   Animated,
   Alert,
   Easing,
+  FlatList,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -32,6 +33,11 @@ import {
   getSendButtonAccessibilityState,
 } from "./chat-interaction";
 import { MessageContent } from "./message-content";
+import {
+  buildMessageListData,
+  getMessageListInitialRenderCount,
+  type MessageListRow,
+} from "./message-list-performance";
 import { readMessageReasoning } from "./message-reasoning";
 import { readMessageImageAttachments } from "@/api/message-attachments";
 import type {
@@ -732,7 +738,7 @@ export function ChatScreen({
   onEditLastUserMessage,
 }: ChatScreenProps) {
   const { theme } = useUnistyles();
-  const messagesScrollRef = useRef<ScrollView>(null);
+  const messagesScrollRef = useRef<FlatList<MessageListRow<ChisaTalkMessage>>>(null);
   const sidebarProgress = useRef(new Animated.Value(0)).current;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -913,6 +919,15 @@ export function ChatScreen({
     ? formatConversationListTitle(selectedConversation.title, participantLabels)
     : assistantRoleLabel;
   const latestUserMessageId = useMemo(() => getLatestUserMessageId(messages), [messages]);
+  const messageListData = useMemo(
+    () =>
+      buildMessageListData(messages, {
+        isSending,
+        streamingAssistantContent,
+        agentProgressText,
+      }),
+    [agentProgressText, isSending, messages, streamingAssistantContent],
+  );
 
   const openMessageActions = useCallback(
     (message: ChisaTalkMessage) => {
@@ -940,6 +955,141 @@ export function ChatScreen({
       }
     },
     [copyMessage, isSending, latestUserMessageId, openEditMessage],
+  );
+
+  const renderPersistedMessage = useCallback(
+    (message: ChisaTalkMessage) => {
+      const isUser = message.role === "user";
+      const roleLabel = getMessageRoleLabel({
+        role: message.role,
+        userDisplayName: user.displayName,
+        assistantName: assistantProfile.aiName,
+      });
+      const imageAttachments = readMessageImageAttachments(message.providerMeta);
+      const reasoning = !isUser ? readMessageReasoning(message.providerMeta) : null;
+      const approvalActionState = !isUser
+        ? getPendingHermesApprovalActionState({
+            providerMeta: message.providerMeta,
+            isSending,
+          })
+        : { canRespond: false };
+      const reasoningDisclosure = getReasoningDisclosureState({
+        messageId: message.id,
+        expandedReasoningIds,
+      });
+
+      return (
+        <View style={[styles.messageRow, isUser ? styles.userMessageRow : styles.assistantMessageRow]}>
+          <AnimatedPressable
+            accessibilityRole="button"
+            onLongPress={() => openMessageActions(message)}
+            staticMotion
+            style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}
+          >
+            <Text style={[styles.roleText, isUser ? styles.userRoleText : styles.assistantRoleText]}>
+              {roleLabel}
+            </Text>
+            {reasoning ? (
+              <View style={styles.reasoningCard}>
+                <AnimatedPressable
+                  accessibilityRole="button"
+                  onPress={() => toggleReasoning(message.id)}
+                  style={styles.reasoningHeader}
+                >
+                  <Text style={styles.reasoningTitle}>思考过程</Text>
+                  <Text style={styles.reasoningMeta}>{reasoningDisclosure.actionText}</Text>
+                </AnimatedPressable>
+                <Text numberOfLines={reasoningDisclosure.numberOfLines} style={styles.reasoningBody}>
+                  {reasoning}
+                </Text>
+              </View>
+            ) : null}
+            {isUser ? (
+              <Text style={[styles.messageText, styles.userMessageText]}>{message.content}</Text>
+            ) : (
+              <MessageContent content={message.content} />
+            )}
+            {imageAttachments.map((attachment, index) => (
+              <Image
+                key={`${message.id}-image-${index}`}
+                source={{ uri: attachment.dataUrl }}
+                style={styles.messageImage}
+              />
+            ))}
+            {approvalActionState.canRespond ? (
+              <View style={styles.approvalButtonRow}>
+                <AnimatedPressable
+                  accessibilityRole="button"
+                  onPress={() => void onSendMessage("批准", [])}
+                  style={[styles.approvalButton, styles.approvalButtonPrimary]}
+                >
+                  <Text style={styles.approvalButtonTextPrimary}>批准</Text>
+                </AnimatedPressable>
+                <AnimatedPressable
+                  accessibilityRole="button"
+                  onPress={() => void onSendMessage("拒绝", [])}
+                  style={[styles.approvalButton, styles.approvalButtonSecondary]}
+                >
+                  <Text style={styles.approvalButtonTextSecondary}>拒绝</Text>
+                </AnimatedPressable>
+              </View>
+            ) : null}
+          </AnimatedPressable>
+        </View>
+      );
+    },
+    [
+      assistantProfile.aiName,
+      expandedReasoningIds,
+      isSending,
+      onSendMessage,
+      openMessageActions,
+      toggleReasoning,
+      user.displayName,
+    ],
+  );
+
+  const renderStreamingAssistant = useCallback(
+    (item: Extract<MessageListRow<ChisaTalkMessage>, { type: "streaming" }>) => (
+      <View style={[styles.messageRow, styles.assistantMessageRow]}>
+        <View style={[styles.messageBubble, styles.assistantBubble]}>
+          <Text style={[styles.roleText, styles.assistantRoleText]}>{assistantRoleLabel}</Text>
+          <View style={styles.reasoningCard}>
+            <View style={styles.reasoningHeader}>
+              <Text style={styles.reasoningTitle}>{item.agentProgressText ? "Hermes Agent" : "思考中"}</Text>
+              <Text style={styles.reasoningMeta}>
+                {item.streamingAssistantContent.trim().length > 0 ? "流式回复中" : "等待模型返回"}
+              </Text>
+            </View>
+            <Text style={styles.reasoningBody}>
+              {item.agentProgressText ?? "正在组织上下文、图片和历史消息。"}
+            </Text>
+          </View>
+          {item.streamingAssistantContent.trim().length > 0 ? (
+            <MessageContent content={item.streamingAssistantContent} />
+          ) : (
+            <>
+              <Text style={styles.thinkingText}>正在生成回复</Text>
+              <View style={styles.thinkingDots}>
+                {[0, 1, 2].map((index) => (
+                  <View
+                    key={index}
+                    style={[styles.thinkingDot, thinkingFrame === index ? styles.thinkingDotActive : null]}
+                  />
+                ))}
+              </View>
+            </>
+          )}
+        </View>
+      </View>
+    ),
+    [assistantRoleLabel, thinkingFrame],
+  );
+
+  const renderMessageListRow = useCallback(
+    ({ item }: { item: MessageListRow<ChisaTalkMessage> }) =>
+      item.type === "message" ? renderPersistedMessage(item.message) : renderStreamingAssistant(item),
+    [renderPersistedMessage, renderStreamingAssistant],
   );
 
   const composerState = getChatComposerState({
@@ -1016,132 +1166,20 @@ export function ChatScreen({
         style={styles.body}
       >
         {selectedConversation ? (
-          <ScrollView
+          <FlatList
             contentContainerStyle={styles.messagesContent}
+            data={messageListData}
+            initialNumToRender={getMessageListInitialRenderCount(messages.length)}
+            keyExtractor={(item) => item.id}
+            maxToRenderPerBatch={12}
             onContentSizeChange={() => scrollToLatest(true)}
             ref={messagesScrollRef}
+            removeClippedSubviews={Platform.OS === "android"}
+            renderItem={renderMessageListRow}
             showsVerticalScrollIndicator={false}
             style={styles.messages}
-          >
-            {messages.map((message) => {
-              const isUser = message.role === "user";
-              const roleLabel = getMessageRoleLabel({
-                role: message.role,
-                userDisplayName: user.displayName,
-                assistantName: assistantProfile.aiName,
-              });
-              const imageAttachments = readMessageImageAttachments(message.providerMeta);
-              const reasoning = !isUser ? readMessageReasoning(message.providerMeta) : null;
-              const approvalActionState = !isUser
-                ? getPendingHermesApprovalActionState({
-                    providerMeta: message.providerMeta,
-                    isSending,
-                  })
-                : { canRespond: false };
-              const reasoningDisclosure = getReasoningDisclosureState({
-                messageId: message.id,
-                expandedReasoningIds,
-              });
-              return (
-                <View
-                  key={message.id}
-                  style={[styles.messageRow, isUser ? styles.userMessageRow : styles.assistantMessageRow]}
-                >
-                  <AnimatedPressable
-                    accessibilityRole="button"
-                    onLongPress={() => openMessageActions(message)}
-                    staticMotion
-                    style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}
-                  >
-                    <Text style={[styles.roleText, isUser ? styles.userRoleText : styles.assistantRoleText]}>
-                      {roleLabel}
-                    </Text>
-                    {reasoning ? (
-                      <View style={styles.reasoningCard}>
-                        <AnimatedPressable
-                          accessibilityRole="button"
-                          onPress={() => toggleReasoning(message.id)}
-                          style={styles.reasoningHeader}
-                        >
-                          <Text style={styles.reasoningTitle}>思考过程</Text>
-                          <Text style={styles.reasoningMeta}>{reasoningDisclosure.actionText}</Text>
-                        </AnimatedPressable>
-                        <Text
-                          numberOfLines={reasoningDisclosure.numberOfLines}
-                          style={styles.reasoningBody}
-                        >
-                          {reasoning}
-                        </Text>
-                      </View>
-                    ) : null}
-                    {isUser ? (
-                      <Text style={[styles.messageText, styles.userMessageText]}>{message.content}</Text>
-                    ) : (
-                      <MessageContent content={message.content} />
-                    )}
-                    {imageAttachments.map((attachment, index) => (
-                      <Image
-                        key={`${message.id}-image-${index}`}
-                        source={{ uri: attachment.dataUrl }}
-                        style={styles.messageImage}
-                      />
-                    ))}
-                    {approvalActionState.canRespond ? (
-                      <View style={styles.approvalButtonRow}>
-                        <AnimatedPressable
-                          accessibilityRole="button"
-                          onPress={() => void onSendMessage("批准", [])}
-                          style={[styles.approvalButton, styles.approvalButtonPrimary]}
-                        >
-                          <Text style={styles.approvalButtonTextPrimary}>批准</Text>
-                        </AnimatedPressable>
-                        <AnimatedPressable
-                          accessibilityRole="button"
-                          onPress={() => void onSendMessage("拒绝", [])}
-                          style={[styles.approvalButton, styles.approvalButtonSecondary]}
-                        >
-                          <Text style={styles.approvalButtonTextSecondary}>拒绝</Text>
-                        </AnimatedPressable>
-                      </View>
-                    ) : null}
-                  </AnimatedPressable>
-                </View>
-              );
-            })}
-            {isSending ? (
-              <View style={[styles.messageRow, styles.assistantMessageRow]}>
-                <View style={[styles.messageBubble, styles.assistantBubble]}>
-                  <Text style={[styles.roleText, styles.assistantRoleText]}>{assistantRoleLabel}</Text>
-                  <View style={styles.reasoningCard}>
-                    <View style={styles.reasoningHeader}>
-                      <Text style={styles.reasoningTitle}>{agentProgressText ? "Hermes Agent" : "思考中"}</Text>
-                      <Text style={styles.reasoningMeta}>
-                        {streamingAssistantContent.trim().length > 0 ? "流式回复中" : "等待模型返回"}
-                      </Text>
-                    </View>
-                    <Text style={styles.reasoningBody}>
-                      {agentProgressText ?? "正在组织上下文、图片和历史消息。"}
-                    </Text>
-                  </View>
-                  {streamingAssistantContent.trim().length > 0 ? (
-                    <MessageContent content={streamingAssistantContent} />
-                  ) : (
-                    <>
-                      <Text style={styles.thinkingText}>正在生成回复</Text>
-                      <View style={styles.thinkingDots}>
-                        {[0, 1, 2].map((index) => (
-                          <View
-                            key={index}
-                            style={[styles.thinkingDot, thinkingFrame === index ? styles.thinkingDotActive : null]}
-                          />
-                        ))}
-                      </View>
-                    </>
-                  )}
-                </View>
-              </View>
-            ) : null}
-          </ScrollView>
+            windowSize={7}
+          />
         ) : (
           <View style={styles.emptyMain}>
             <View style={styles.emptyMark}>
